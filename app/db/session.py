@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import contextmanager
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -9,9 +10,46 @@ from sqlalchemy.orm import Session, sessionmaker
 _SessionLocal: sessionmaker[Session] | None = None
 
 
-def init_db(db_path: str) -> None:
+def _normalize_database_url(database_url: str) -> str:
+    """
+    Normalize DB URLs for SQLAlchemy and enforce SSL for hosted Postgres (Render).
+
+    - Accepts Render-style URLs: postgresql://... or postgres://...
+    - Converts to SQLAlchemy psycopg driver: postgresql+psycopg://...
+    - Ensures sslmode=require if not explicitly provided.
+    """
+    raw = database_url.strip()
+    if not raw:
+        raise ValueError("database_url must be non-empty when provided")
+
+    parsed = urlparse(raw)
+    scheme = parsed.scheme.lower()
+    if scheme in {"postgres", "postgresql"}:
+        scheme = "postgresql+psycopg"
+
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if "sslmode" not in {k.lower(): v for k, v in query.items()}:
+        # Render Postgres requires SSL by default; enforce if user didn't specify.
+        query["sslmode"] = "require"
+
+    return urlunparse(
+        parsed._replace(
+            scheme=scheme,
+            query=urlencode(query, doseq=True),
+        )
+    )
+
+
+def init_db(database_url: str | None, db_path: str) -> None:
     global _SessionLocal
-    engine = create_engine(f"sqlite:///{db_path}", future=True)
+    if database_url:
+        url = _normalize_database_url(database_url)
+        engine = create_engine(url, future=True, pool_pre_ping=True)
+        is_sqlite = False
+    else:
+        engine = create_engine(f"sqlite:///{db_path}", future=True)
+        is_sqlite = True
+
     # We return ORM objects from short-lived sessions (services layer).
     # Without this, attributes may expire on commit and then raise DetachedInstanceError.
     _SessionLocal = sessionmaker(
@@ -26,7 +64,8 @@ def init_db(db_path: str) -> None:
     from app.db.models import Base  # noqa: WPS433
 
     Base.metadata.create_all(bind=engine)
-    _migrate_schema(engine)
+    if is_sqlite:
+        _migrate_schema(engine)
 
 
 def _migrate_schema(engine) -> None:

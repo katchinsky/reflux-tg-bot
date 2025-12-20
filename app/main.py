@@ -28,7 +28,7 @@ def main() -> None:
     )
 
     settings = load_settings()
-    init_db(settings.db_path)
+    init_db(settings.database_url, settings.db_path)
 
     app = Application.builder().token(settings.bot_token).build()
     build_handlers(app, default_timezone=settings.default_timezone)
