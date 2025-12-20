@@ -3,11 +3,27 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
 from app.db.models import ConversationState, User
 from app.db.session import get_session
+
+
+UTC = ZoneInfo("UTC")
+
+
+def _as_utc_aware(dt: datetime) -> datetime:
+    """
+    Normalize datetimes for safe comparisons & persistence.
+
+    - If `dt` is naive, we assume it is UTC and attach UTC tzinfo.
+    - If `dt` is aware, we convert it to UTC.
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 @dataclass
@@ -22,7 +38,7 @@ class StateStore:
         self._ttl = timedelta(hours=ttl_hours)
 
     def load(self, user: User, *, flow: str, now_utc: datetime) -> DraftState | None:
-        now_naive = now_utc.replace(tzinfo=None) if now_utc.tzinfo else now_utc
+        now = _as_utc_aware(now_utc)
         with get_session() as session:
             row = (
                 session.execute(
@@ -35,7 +51,8 @@ class StateStore:
             )
             if not row:
                 return None
-            if row.expires_at < now_naive:
+            expires_at = _as_utc_aware(row.expires_at)
+            if expires_at < now:
                 session.delete(row)
                 return None
             try:
@@ -45,7 +62,7 @@ class StateStore:
             return DraftState(flow=flow, step=row.step, draft=draft)
 
     def save(self, user: User, *, flow: str, step: str, draft: dict, now_utc: datetime) -> None:
-        now_naive = now_utc.replace(tzinfo=None) if now_utc.tzinfo else now_utc
+        now = _as_utc_aware(now_utc)
         with get_session() as session:
             row = (
                 session.execute(
@@ -61,8 +78,8 @@ class StateStore:
                 session.add(row)
             row.step = step
             row.draft_json = json.dumps(draft, ensure_ascii=False)
-            row.updated_at = now_naive
-            row.expires_at = now_naive + self._ttl
+            row.updated_at = now
+            row.expires_at = now + self._ttl
 
     def clear(self, user: User, *, flow: str) -> None:
         with get_session() as session:
