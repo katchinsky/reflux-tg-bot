@@ -16,8 +16,8 @@ from telegram.ext import (
 )
 
 from app.bot.keyboards import main_menu_keyboard
-from app.bot.text import START_TEXT
-from app.services.users import ensure_user
+from app.core.i18n import language_label, t
+from app.services.users import ensure_user, get_user_language, set_user_language
 from app.bot.handlers_flows import (
     meal_conversation,
     medicine_conversation,
@@ -30,43 +30,92 @@ from app.services.reports import association_signals, last_7_days_summary
 from app.services.exporting import export_csv_zip_bytes, export_json_bytes
 
 
+def _lang(update: Update) -> str:
+    if not update.effective_user:
+        return "en"
+    return get_user_language(update.effective_user.id)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message:
         return
     ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
-    await update.message.reply_text(START_TEXT, reply_markup=main_menu_keyboard())
+    lang = _lang(update)
+    await update.message.reply_text(t(lang, "start.text"), reply_markup=main_menu_keyboard())
+
+
+async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user or not update.message:
+        return
+    current = _lang(update)
+    usage = t(current, "lang.usage")
+    if not context.args:
+        await update.message.reply_text(
+            t(current, "lang.current", lang=language_label(current, current), usage=usage),
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    raw = (context.args[0] or "").strip().lower()
+    if raw not in ("en", "ru"):
+        await update.message.reply_text(t(current, "lang.bad", usage=usage), reply_markup=main_menu_keyboard())
+        return
+
+    # Persist and respond in the new language.
+    user = set_user_language(
+        update.effective_user.id,
+        lang=raw,
+        default_timezone=context.bot_data["default_timezone"],
+    )
+    new_lang = getattr(user, "language", raw)
+    await update.message.reply_text(
+        t(new_lang, "lang.set_ok", lang=language_label(new_lang, new_lang)),
+        reply_markup=main_menu_keyboard(),
+    )
 
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message:
         return
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", _lang(update))
     now = datetime.now(tz=ZoneInfo("UTC"))
-    summary = last_7_days_summary(user, now_utc=now)
-    header, rows = association_signals(user, now_utc=now, window_hours=4)
+    summary = last_7_days_summary(user, now_utc=now, lang=lang)
+    header, rows = association_signals(user, now_utc=now, window_hours=4, lang=lang)
     lines = [summary, "", header]
     if rows:
         for r in rows:
             p = f"{r.p:.0%}"
             avg = f"{r.avg_intensity:.1f}" if r.avg_intensity is not None else "-"
-            lines.append(f"- {r.label}: {p} ({r.meals_with_symptom}/{r.meals_total}), avg intensity {avg}")
+            lines.append(
+                t(
+                    lang,
+                    "report.row_fmt",
+                    label=r.label,
+                    p=p,
+                    with_symptom=r.meals_with_symptom,
+                    total=r.meals_total,
+                    avg=avg,
+                )
+            )
     else:
-        lines.append("- Not enough data yet (need a few meals logged).")
+        lines.append(t(lang, "report.not_enough_data"))
     await update.message.reply_text("\n".join(lines), reply_markup=main_menu_keyboard())
 
 
 async def export_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message:
         return
+    lang = _lang(update)
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Export JSON", callback_data="export:json"),
-                InlineKeyboardButton("Export CSV (zip)", callback_data="export:csv"),
+                InlineKeyboardButton(t(lang, "export.json_btn"), callback_data="export:json"),
+                InlineKeyboardButton(t(lang, "export.csv_btn"), callback_data="export:csv"),
             ]
         ]
     )
-    await update.message.reply_text("Choose export format:", reply_markup=kb)
+    await update.message.reply_text(t(lang, "export.choose_format"), reply_markup=kb)
 
 
 async def export_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -76,24 +125,26 @@ async def export_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await q.answer()
     fmt = (q.data or "").split(":", 1)[-1]
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", _lang(update))
     if fmt == "json":
         data = export_json_bytes(user)
         f = io.BytesIO(data)
         f.name = "reflux-export.json"
-        await q.message.reply_document(document=f, caption="Your export (JSON).")  # type: ignore[union-attr]
+        await q.message.reply_document(document=f, caption=t(lang, "export.caption_json"))  # type: ignore[union-attr]
         return
     if fmt == "csv":
         data = export_csv_zip_bytes(user)
         f = io.BytesIO(data)
         f.name = "reflux-export-csv.zip"
-        await q.message.reply_document(document=f, caption="Your export (CSV zip).")  # type: ignore[union-attr]
+        await q.message.reply_document(document=f, caption=t(lang, "export.caption_csv"))  # type: ignore[union-attr]
         return
-    await q.message.reply_text("Unknown export format.")  # type: ignore[union-attr]
+    await q.message.reply_text(t(lang, "export.unknown_format"))  # type: ignore[union-attr]
 
 
 def build_handlers(app: Application, *, default_timezone: str) -> None:
     app.bot_data["default_timezone"] = default_timezone
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("lang", lang_command))
     app.add_handler(CommandHandler("report", report))
     # Backwards compatibility if a user still has old non-command keyboard buttons.
     app.add_handler(MessageHandler(filters.Regex(r"^(Reports|📊\s*Reports)$"), report))
@@ -110,7 +161,10 @@ def build_handlers(app: Application, *, default_timezone: str) -> None:
 
     async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.message:
-            await update.message.reply_text("Use /start to see the menu.", reply_markup=main_menu_keyboard())
+            await update.message.reply_text(
+                t(_lang(update), "unknown.use_start"),
+                reply_markup=main_menu_keyboard(),
+            )
 
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
@@ -121,5 +175,3 @@ def build_handlers(app: Application, *, default_timezone: str) -> None:
         )
 
     app.add_error_handler(on_error)
-
-

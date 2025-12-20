@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.core.i18n import t
+
 
 UTC = ZoneInfo("UTC")
 
@@ -18,13 +20,19 @@ def fmt_dt_user(dt_utc: datetime, *, user_tz: str) -> str:
     return dt_utc.astimezone(ZoneInfo(user_tz)).strftime("%Y-%m-%d %H:%M")
 
 
-def nav_kb(*, flow: str, show_back: bool = True, show_skip: bool = False) -> InlineKeyboardMarkup:
+def nav_kb(
+    *,
+    flow: str,
+    lang: str | None = None,
+    show_back: bool = True,
+    show_skip: bool = False,
+) -> InlineKeyboardMarkup:
     row: list[InlineKeyboardButton] = []
     if show_back:
-        row.append(InlineKeyboardButton("Back", callback_data=f"{flow}:nav:back"))
+        row.append(InlineKeyboardButton(t(lang, "common.back"), callback_data=f"{flow}:nav:back"))
     if show_skip:
-        row.append(InlineKeyboardButton("Skip", callback_data=f"{flow}:nav:skip"))
-    row.append(InlineKeyboardButton("Cancel", callback_data=f"{flow}:nav:cancel"))
+        row.append(InlineKeyboardButton(t(lang, "common.skip"), callback_data=f"{flow}:nav:skip"))
+    row.append(InlineKeyboardButton(t(lang, "common.cancel"), callback_data=f"{flow}:nav:cancel"))
     return InlineKeyboardMarkup([row])
 
 

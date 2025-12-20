@@ -15,7 +15,15 @@ from telegram.ext import (
 
 from app.bot.flow_common import fmt_dt_user, nav_kb, now_utc, one_hour_ago, parse_cb
 from app.bot.keyboards import main_menu_keyboard
-from app.bot.text import DISCLAIMERS_TEXT
+from app.core.i18n import (
+    activity_level_label,
+    fat_label,
+    portion_label,
+    posture_label,
+    sleep_position_label,
+    symptom_type_label,
+    t,
+)
 from app.core.state import StateStore
 from app.core.timeparse import parse_user_time
 from app.services.logging import create_meal, create_medication, create_morning_check, create_symptom
@@ -54,6 +62,7 @@ async def _cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, *, flow: s
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     _store.clear(user, flow=flow)
     context.user_data.pop(_draft_key(flow), None)
     context.user_data.pop(_hist_key(flow), None)
@@ -61,18 +70,27 @@ async def _cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, *, flow: s
 
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text("Cancelled.", reply_markup=main_menu_keyboard())
+        # Can't attach a reply keyboard to an edited inline-keyboard message.
+        await update.callback_query.edit_message_text(t(lang, "common.cancelled"))
+        if update.callback_query.message:
+            await update.callback_query.message.reply_text(
+                t(lang, "common.menu"), reply_markup=main_menu_keyboard()
+            )
     elif update.message:
-        await update.message.reply_text("Cancelled.", reply_markup=main_menu_keyboard())
+        await update.message.reply_text(t(lang, "common.cancelled"), reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
 
 async def _not_implemented(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    lang = "en"
+    if update.effective_user:
+        user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+        lang = getattr(user, "language", "en")
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text("Not implemented yet.")
+        await update.callback_query.edit_message_text(t(lang, "common.not_implemented"))
     elif update.message:
-        await update.message.reply_text("Not implemented yet.")
+        await update.message.reply_text(t(lang, "common.not_implemented"))
     return ConversationHandler.END
 
 
@@ -93,6 +111,7 @@ async def meal_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     loaded = _store.load(user, flow=MEAL_FLOW, now_utc=now_utc())
     if loaded:
         context.user_data[_draft_key(MEAL_FLOW)] = loaded.draft
@@ -100,13 +119,13 @@ async def meal_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         kb = InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("Resume draft", callback_data="meal:resume:yes"),
-                    InlineKeyboardButton("Discard", callback_data="meal:resume:no"),
+                    InlineKeyboardButton(t(lang, "common.resume_draft"), callback_data="meal:resume:yes"),
+                    InlineKeyboardButton(t(lang, "common.discard"), callback_data="meal:resume:no"),
                 ]
             ]
         )
         if update.message:
-            await update.message.reply_text("You have an unfinished meal draft. Resume?", reply_markup=kb)
+            await update.message.reply_text(t(lang, "meal.unfinished_resume"), reply_markup=kb)
         return MEAL_RESUME
 
     context.user_data[_draft_key(MEAL_FLOW)] = {}
@@ -171,20 +190,21 @@ async def meal_prompt_time(
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MEAL_FLOW), {})
     if fresh:
         draft.clear()
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Now", callback_data="meal:time:now"),
-                InlineKeyboardButton("1h ago", callback_data="meal:time:1h"),
-                InlineKeyboardButton("Custom", callback_data="meal:time:custom"),
+                InlineKeyboardButton(t(lang, "meal.time.now"), callback_data="meal:time:now"),
+                InlineKeyboardButton(t(lang, "meal.time.one_hour_ago"), callback_data="meal:time:1h"),
+                InlineKeyboardButton(t(lang, "meal.time.custom"), callback_data="meal:time:custom"),
             ],
-            [InlineKeyboardButton("Cancel", callback_data="meal:nav:cancel")],
+            [InlineKeyboardButton(t(lang, "common.cancel"), callback_data="meal:nav:cancel")],
         ]
     )
-    text = "Meal time:"
+    text = t(lang, "meal.time.title")
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -225,9 +245,10 @@ async def meal_prompt_custom_time(update: Update, context: ContextTypes.DEFAULT_
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MEAL_FLOW), {})
-    text = "Send time as `HH:MM` (today) or `yesterday HH:MM`."
-    kb = nav_kb(flow=MEAL_FLOW, show_back=True, show_skip=False)
+    text = t(lang, "meal.time.custom_help")
+    kb = nav_kb(flow=MEAL_FLOW, lang=lang, show_back=True, show_skip=False)
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
     elif update.message:
@@ -244,7 +265,7 @@ async def meal_custom_time_msg(update: Update, context: ContextTypes.DEFAULT_TYP
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
     parsed = parse_user_time(update.message.text or "", user_tz=user.timezone, now_utc=now_utc())
     if not parsed:
-        await update.message.reply_text("Couldn’t parse that time. Try `13:10` or `yesterday 21:30`.")
+        await update.message.reply_text(t(getattr(user, "language", "en"), "meal.time.parse_fail"))
         return MEAL_TIME_CUSTOM
     draft = context.user_data.setdefault(_draft_key(MEAL_FLOW), {})
     draft["occurred_at_utc"] = parsed.isoformat()
@@ -256,9 +277,10 @@ async def meal_prompt_input(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MEAL_FLOW), {})
-    kb = nav_kb(flow=MEAL_FLOW, show_back=True, show_skip=False)
-    text = "Send meal notes as text, or send a photo (with optional caption)."
+    kb = nav_kb(flow=MEAL_FLOW, lang=lang, show_back=True, show_skip=False)
+    text = t(lang, "meal.input.help")
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -288,6 +310,7 @@ async def meal_prompt_portion(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MEAL_FLOW), {})
     kb = InlineKeyboardMarkup(
         [
@@ -296,10 +319,10 @@ async def meal_prompt_portion(update: Update, context: ContextTypes.DEFAULT_TYPE
                 InlineKeyboardButton("M", callback_data="meal:portion:medium"),
                 InlineKeyboardButton("L", callback_data="meal:portion:large"),
             ],
-            nav_kb(flow=MEAL_FLOW, show_back=True, show_skip=False).inline_keyboard[0],
+            nav_kb(flow=MEAL_FLOW, lang=lang, show_back=True, show_skip=False).inline_keyboard[0],
         ]
     )
-    text = "Portion size:"
+    text = t(lang, "meal.portion.title")
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -329,19 +352,20 @@ async def meal_prompt_fat(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MEAL_FLOW), {})
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Low", callback_data="meal:fat:low"),
-                InlineKeyboardButton("Med", callback_data="meal:fat:medium"),
-                InlineKeyboardButton("High", callback_data="meal:fat:high"),
-                InlineKeyboardButton("Skip", callback_data="meal:fat:unknown"),
+                InlineKeyboardButton(fat_label(lang, "low"), callback_data="meal:fat:low"),
+                InlineKeyboardButton(fat_label(lang, "medium"), callback_data="meal:fat:medium"),
+                InlineKeyboardButton(fat_label(lang, "high"), callback_data="meal:fat:high"),
+                InlineKeyboardButton(t(lang, "common.skip"), callback_data="meal:fat:unknown"),
             ],
-            nav_kb(flow=MEAL_FLOW, show_back=True, show_skip=False).inline_keyboard[0],
+            nav_kb(flow=MEAL_FLOW, lang=lang, show_back=True, show_skip=False).inline_keyboard[0],
         ]
     )
-    text = "Fat level (optional):"
+    text = t(lang, "meal.fat.title")
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -371,22 +395,23 @@ async def meal_prompt_posture(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MEAL_FLOW), {})
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Laying", callback_data="meal:posture:laying"),
-                InlineKeyboardButton("Sitting", callback_data="meal:posture:sitting"),
+                InlineKeyboardButton(posture_label(lang, "laying"), callback_data="meal:posture:laying"),
+                InlineKeyboardButton(posture_label(lang, "sitting"), callback_data="meal:posture:sitting"),
             ],
             [
-                InlineKeyboardButton("Walking", callback_data="meal:posture:walking"),
-                InlineKeyboardButton("Standing", callback_data="meal:posture:standing"),
+                InlineKeyboardButton(posture_label(lang, "walking"), callback_data="meal:posture:walking"),
+                InlineKeyboardButton(posture_label(lang, "standing"), callback_data="meal:posture:standing"),
             ],
-            [InlineKeyboardButton("Skip", callback_data="meal:posture:unknown")],
-            nav_kb(flow=MEAL_FLOW, show_back=True, show_skip=False).inline_keyboard[0],
+            [InlineKeyboardButton(t(lang, "common.skip"), callback_data="meal:posture:unknown")],
+            nav_kb(flow=MEAL_FLOW, lang=lang, show_back=True, show_skip=False).inline_keyboard[0],
         ]
     )
-    text = "Posture after (optional):"
+    text = t(lang, "meal.posture.title")
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -416,25 +441,27 @@ async def meal_prompt_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MEAL_FLOW), {})
     occurred_at = (
         datetime.fromisoformat(draft["occurred_at_utc"]) if draft.get("occurred_at_utc") else now_utc()
     )
+    notes = draft.get("notes_text") or t(lang, "common.none")
     text = (
-        "**Meal draft**\n"
-        f"Time: {fmt_dt_user(occurred_at, user_tz=user.timezone)}\n"
-        f"Portion: {draft.get('portion_size', 'medium')}\n"
-        f"Fat: {draft.get('fat_level', 'unknown')}\n"
-        f"Posture: {draft.get('posture_after', 'unknown')}\n"
-        f"Notes: {draft.get('notes_text') or '(none)'}\n\n"
-        "Save?"
+        f"{t(lang, 'meal.confirm.title')}\n"
+        f"{t(lang, 'meal.confirm.time')}: {fmt_dt_user(occurred_at, user_tz=user.timezone)}\n"
+        f"{t(lang, 'meal.confirm.portion')}: {portion_label(lang, str(draft.get('portion_size', 'medium')))}\n"
+        f"{t(lang, 'meal.confirm.fat')}: {fat_label(lang, str(draft.get('fat_level', 'unknown')))}\n"
+        f"{t(lang, 'meal.confirm.posture')}: {posture_label(lang, str(draft.get('posture_after', 'unknown')))}\n"
+        f"{t(lang, 'meal.confirm.notes')}: {notes}\n\n"
+        f"{t(lang, 'meal.confirm.save_q')}"
     )
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Save", callback_data="meal:confirm:save"),
-                InlineKeyboardButton("Back", callback_data="meal:nav:back"),
-                InlineKeyboardButton("Cancel", callback_data="meal:nav:cancel"),
+                InlineKeyboardButton(t(lang, "common.save"), callback_data="meal:confirm:save"),
+                InlineKeyboardButton(t(lang, "common.back"), callback_data="meal:nav:back"),
+                InlineKeyboardButton(t(lang, "common.cancel"), callback_data="meal:nav:cancel"),
             ]
         ]
     )
@@ -457,6 +484,7 @@ async def meal_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not cb or cb.flow != MEAL_FLOW or cb.kind != "confirm" or cb.value != "save":
         return MEAL_CONFIRM
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.get(_draft_key(MEAL_FLOW), {})
     create_meal(
         user,
@@ -472,9 +500,9 @@ async def meal_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data.pop(_hist_key(MEAL_FLOW), None)
     context.user_data.pop(_step_key(MEAL_FLOW), None)
     # Editing an inline-keyboard message cannot attach a reply keyboard.
-    await q.edit_message_text("Meal logged.\n\n" + DISCLAIMERS_TEXT)
+    await q.edit_message_text(t(lang, "meal.logged", disclaimer=t(lang, "disclaimer.text")))
     if q.message:
-        await q.message.reply_text("What next?", reply_markup=main_menu_keyboard())
+        await q.message.reply_text(t(lang, "common.what_next"), reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -508,30 +536,25 @@ async def symptom_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return await _cancel(update, context, flow=SYM_FLOW)
 
 SYMPTOM_TYPES = [
-    ("Heartburn", "heartburn"),
-    ("Regurgitation", "regurgitation"),
-    ("Burping", "burping"),
-    ("Nausea", "nausea"),
-    ("Cough/Hoarseness", "cough_hoarseness"),
-    ("Chest discomfort", "chest_discomfort"),
-    ("Throat burn", "throat_burn"),
-    ("Bloating", "bloating"),
-    ("Other", "other"),
+    "reflux",
+    "heartburn",
+    "regurgitation",
+    # "burping",
+    "nausea",
+    "cough_hoarseness",
+    # "chest_discomfort",
+    # "throat_burn",
+    "bloating",
+    "stomach_pain",
+    "other",
 ]
-
-def _symptom_label(value: str | None) -> str:
-    if not value:
-        return "other"
-    for label, v in SYMPTOM_TYPES:
-        if v == value:
-            return label
-    return value
 
 
 async def symptom_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     loaded = _store.load(user, flow=SYM_FLOW, now_utc=now_utc())
     if loaded:
         context.user_data[_draft_key(SYM_FLOW)] = loaded.draft
@@ -539,13 +562,13 @@ async def symptom_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         kb = InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("Resume draft", callback_data="symptom:resume:yes"),
-                    InlineKeyboardButton("Discard", callback_data="symptom:resume:no"),
+                    InlineKeyboardButton(t(lang, "common.resume_draft"), callback_data="symptom:resume:yes"),
+                    InlineKeyboardButton(t(lang, "common.discard"), callback_data="symptom:resume:no"),
                 ]
             ]
         )
         if update.message:
-            await update.message.reply_text("You have an unfinished symptom draft. Resume?", reply_markup=kb)
+            await update.message.reply_text(t(lang, "symptom.unfinished_resume"), reply_markup=kb)
         return SYM_RESUME
     context.user_data[_draft_key(SYM_FLOW)] = {}
     context.user_data[_hist_key(SYM_FLOW)] = []
@@ -605,13 +628,14 @@ async def symptom_prompt_type(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(SYM_FLOW), {})
     rows: list[list[InlineKeyboardButton]] = []
-    for label, val in SYMPTOM_TYPES:
-        rows.append([InlineKeyboardButton(label, callback_data=f"symptom:type:{val}")])
-    rows.append(nav_kb(flow=SYM_FLOW, show_back=False, show_skip=False).inline_keyboard[0])
+    for val in SYMPTOM_TYPES:
+        rows.append([InlineKeyboardButton(symptom_type_label(lang, val), callback_data=f"symptom:type:{val}")])
+    rows.append(nav_kb(flow=SYM_FLOW, lang=lang, show_back=False, show_skip=False).inline_keyboard[0])
     kb = InlineKeyboardMarkup(rows)
-    text = "Symptom type:"
+    text = t(lang, "symptom.type.title")
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -641,9 +665,10 @@ async def symptom_prompt_intensity(update: Update, context: ContextTypes.DEFAULT
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(SYM_FLOW), {})
-    text = "Intensity (0–10). Send a number."
-    kb = nav_kb(flow=SYM_FLOW, show_back=True, show_skip=False)
+    text = t(lang, "symptom.intensity.help")
+    kb = nav_kb(flow=SYM_FLOW, lang=lang, show_back=True, show_skip=False)
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -660,10 +685,12 @@ async def symptom_intensity_msg(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         val = int((update.message.text or "").strip())
     except Exception:
-        await update.message.reply_text("Please send a number 0–10.")
+        user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+        await update.message.reply_text(t(getattr(user, "language", "en"), "symptom.intensity.bad"))
         return SYM_INTENSITY
     if not (0 <= val <= 10):
-        await update.message.reply_text("Intensity must be 0–10.")
+        user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+        await update.message.reply_text(t(getattr(user, "language", "en"), "symptom.intensity.range"))
         return SYM_INTENSITY
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
     draft = context.user_data.setdefault(_draft_key(SYM_FLOW), {})
@@ -676,17 +703,18 @@ async def symptom_prompt_time(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(SYM_FLOW), {})
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Now", callback_data="symptom:time:now"),
-                InlineKeyboardButton("Custom", callback_data="symptom:time:custom"),
+                InlineKeyboardButton(t(lang, "meal.time.now"), callback_data="symptom:time:now"),
+                InlineKeyboardButton(t(lang, "meal.time.custom"), callback_data="symptom:time:custom"),
             ],
-            nav_kb(flow=SYM_FLOW, show_back=True, show_skip=False).inline_keyboard[0],
+            nav_kb(flow=SYM_FLOW, lang=lang, show_back=True, show_skip=False).inline_keyboard[0],
         ]
     )
-    text = "Start time:"
+    text = t(lang, "symptom.time.title")
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -721,9 +749,10 @@ async def symptom_prompt_time_custom(update: Update, context: ContextTypes.DEFAU
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(SYM_FLOW), {})
-    text = "Send start time as `HH:MM` (today) or `yesterday HH:MM`."
-    kb = nav_kb(flow=SYM_FLOW, show_back=True, show_skip=False)
+    text = t(lang, "symptom.time.custom_help")
+    kb = nav_kb(flow=SYM_FLOW, lang=lang, show_back=True, show_skip=False)
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
     elif update.message:
@@ -740,7 +769,7 @@ async def symptom_time_custom_msg(update: Update, context: ContextTypes.DEFAULT_
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
     parsed = parse_user_time(update.message.text or "", user_tz=user.timezone, now_utc=now_utc())
     if not parsed:
-        await update.message.reply_text("Couldn’t parse that time. Try `13:10` or `yesterday 21:30`.")
+        await update.message.reply_text(t(getattr(user, "language", "en"), "meal.time.parse_fail"))
         return SYM_TIME_CUSTOM
     draft = context.user_data.setdefault(_draft_key(SYM_FLOW), {})
     draft["started_at_utc"] = parsed.isoformat()
@@ -752,20 +781,21 @@ async def symptom_prompt_duration(update: Update, context: ContextTypes.DEFAULT_
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(SYM_FLOW), {})
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Ongoing", callback_data="symptom:duration:ongoing"),
+                InlineKeyboardButton(t(lang, "symptom.duration.ongoing"), callback_data="symptom:duration:ongoing"),
                 InlineKeyboardButton("15m", callback_data="symptom:duration:15"),
                 InlineKeyboardButton("30m", callback_data="symptom:duration:30"),
                 InlineKeyboardButton("60m", callback_data="symptom:duration:60"),
             ],
-            [InlineKeyboardButton("Custom minutes", callback_data="symptom:duration:custom")],
-            nav_kb(flow=SYM_FLOW, show_back=True, show_skip=False).inline_keyboard[0],
+            [InlineKeyboardButton(t(lang, "symptom.duration.custom_btn"), callback_data="symptom:duration:custom")],
+            nav_kb(flow=SYM_FLOW, lang=lang, show_back=True, show_skip=False).inline_keyboard[0],
         ]
     )
-    text = "Duration:"
+    text = t(lang, "symptom.duration.title")
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -806,9 +836,10 @@ async def symptom_prompt_duration_custom(update: Update, context: ContextTypes.D
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(SYM_FLOW), {})
-    text = "Send duration in minutes (number), or type `ongoing`."
-    kb = nav_kb(flow=SYM_FLOW, show_back=True, show_skip=False)
+    text = t(lang, "symptom.duration.custom_help")
+    kb = nav_kb(flow=SYM_FLOW, lang=lang, show_back=True, show_skip=False)
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -832,10 +863,10 @@ async def symptom_duration_custom_msg(update: Update, context: ContextTypes.DEFA
     try:
         mins = int(raw)
     except Exception:
-        await update.message.reply_text("Please send a number of minutes, or `ongoing`.")
+        await update.message.reply_text(t(getattr(user, "language", "en"), "symptom.duration.bad"))
         return SYM_DURATION_CUSTOM
     if mins <= 0 or mins > 24 * 60:
-        await update.message.reply_text("That duration seems off. Send minutes (1–1440).")
+        await update.message.reply_text(t(getattr(user, "language", "en"), "symptom.duration.range"))
         return SYM_DURATION_CUSTOM
     draft["duration_minutes"] = mins
     _store.save(user, flow=SYM_FLOW, step="notes", draft=draft, now_utc=now_utc())
@@ -846,9 +877,10 @@ async def symptom_prompt_notes(update: Update, context: ContextTypes.DEFAULT_TYP
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(SYM_FLOW), {})
-    text = "Optional notes (send text), or tap Skip."
-    kb = nav_kb(flow=SYM_FLOW, show_back=True, show_skip=True)
+    text = t(lang, "symptom.notes.help")
+    kb = nav_kb(flow=SYM_FLOW, lang=lang, show_back=True, show_skip=True)
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -873,24 +905,29 @@ async def symptom_prompt_confirm(update: Update, context: ContextTypes.DEFAULT_T
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(SYM_FLOW), {})
     started_at = datetime.fromisoformat(draft.get("started_at_utc")) if draft.get("started_at_utc") else now_utc()
     duration = draft.get("duration_minutes", None)
+    notes = draft.get("notes") or t(lang, "common.none")
+    duration_text = (
+        t(lang, "symptom.duration.ongoing") if duration is None else f"{duration} min"
+    )
     text = (
-        "**Symptom draft**\n"
-        f"Type: {_symptom_label(draft.get('symptom_type'))}\n"
-        f"Intensity: {draft.get('intensity')}/10\n"
-        f"Started: {fmt_dt_user(started_at, user_tz=user.timezone)}\n"
-        f"Duration: {'Ongoing' if duration is None else f'{duration} min'}\n"
-        f"Notes: {draft.get('notes') or '(none)'}\n\n"
-        "Save?"
+        f"{t(lang, 'symptom.confirm.title')}\n"
+        f"{t(lang, 'symptom.confirm.type')}: {symptom_type_label(lang, draft.get('symptom_type'))}\n"
+        f"{t(lang, 'symptom.confirm.intensity')}: {draft.get('intensity')}/10\n"
+        f"{t(lang, 'symptom.confirm.started')}: {fmt_dt_user(started_at, user_tz=user.timezone)}\n"
+        f"{t(lang, 'symptom.confirm.duration')}: {duration_text}\n"
+        f"{t(lang, 'symptom.confirm.notes')}: {notes}\n\n"
+        f"{t(lang, 'symptom.confirm.save_q')}"
     )
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Save", callback_data="symptom:confirm:save"),
-                InlineKeyboardButton("Back", callback_data="symptom:nav:back"),
-                InlineKeyboardButton("Cancel", callback_data="symptom:nav:cancel"),
+                InlineKeyboardButton(t(lang, "common.save"), callback_data="symptom:confirm:save"),
+                InlineKeyboardButton(t(lang, "common.back"), callback_data="symptom:nav:back"),
+                InlineKeyboardButton(t(lang, "common.cancel"), callback_data="symptom:nav:cancel"),
             ]
         ]
     )
@@ -913,6 +950,7 @@ async def symptom_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not cb or cb.flow != SYM_FLOW or cb.kind != "confirm" or cb.value != "save":
         return SYM_CONFIRM
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.get(_draft_key(SYM_FLOW), {})
     create_symptom(
         user,
@@ -926,9 +964,9 @@ async def symptom_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data.pop(_draft_key(SYM_FLOW), None)
     context.user_data.pop(_hist_key(SYM_FLOW), None)
     context.user_data.pop(_step_key(SYM_FLOW), None)
-    await q.edit_message_text("Symptom logged.\n\n" + DISCLAIMERS_TEXT)
+    await q.edit_message_text(t(lang, "symptom.logged", disclaimer=t(lang, "disclaimer.text")))
     if q.message:
-        await q.message.reply_text("What next?", reply_markup=main_menu_keyboard())
+        await q.message.reply_text(t(lang, "common.what_next"), reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -966,6 +1004,7 @@ async def med_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     loaded = _store.load(user, flow=MED_FLOW, now_utc=now_utc())
     if loaded:
         context.user_data[_draft_key(MED_FLOW)] = loaded.draft
@@ -973,13 +1012,13 @@ async def med_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         kb = InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("Resume draft", callback_data="med:resume:yes"),
-                    InlineKeyboardButton("Discard", callback_data="med:resume:no"),
+                    InlineKeyboardButton(t(lang, "common.resume_draft"), callback_data="med:resume:yes"),
+                    InlineKeyboardButton(t(lang, "common.discard"), callback_data="med:resume:no"),
                 ]
             ]
         )
         if update.message:
-            await update.message.reply_text("You have an unfinished medicine draft. Resume?", reply_markup=kb)
+            await update.message.reply_text(t(lang, "med.unfinished_resume"), reply_markup=kb)
         return MED_RESUME
     context.user_data[_draft_key(MED_FLOW)] = {}
     context.user_data[_hist_key(MED_FLOW)] = []
@@ -1024,9 +1063,10 @@ async def med_prompt_name(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MED_FLOW), {})
-    text = "Medicine name (e.g., Omeprazole):"
-    kb = nav_kb(flow=MED_FLOW, show_back=False, show_skip=False)
+    text = t(lang, "med.name.prompt")
+    kb = nav_kb(flow=MED_FLOW, lang=lang, show_back=False, show_skip=False)
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -1042,7 +1082,8 @@ async def med_name_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
     name = (update.message.text or "").strip()
     if not name:
-        await update.message.reply_text("Please send a medicine name.")
+        user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+        await update.message.reply_text(t(getattr(user, "language", "en"), "med.name.bad"))
         return MED_NAME
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
     draft = context.user_data.setdefault(_draft_key(MED_FLOW), {})
@@ -1055,9 +1096,10 @@ async def med_prompt_dosage(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MED_FLOW), {})
-    text = "Dosage (optional). Send text like `20 mg`, or tap Skip."
-    kb = nav_kb(flow=MED_FLOW, show_back=True, show_skip=True)
+    text = t(lang, "med.dosage.prompt")
+    kb = nav_kb(flow=MED_FLOW, lang=lang, show_back=True, show_skip=True)
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
     elif update.message:
@@ -1082,17 +1124,18 @@ async def med_prompt_time(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MED_FLOW), {})
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Taken now", callback_data="med:time:now"),
-                InlineKeyboardButton("Custom", callback_data="med:time:custom"),
+                InlineKeyboardButton(t(lang, "med.time.now_btn"), callback_data="med:time:now"),
+                InlineKeyboardButton(t(lang, "med.time.custom_btn"), callback_data="med:time:custom"),
             ],
-            nav_kb(flow=MED_FLOW, show_back=True, show_skip=False).inline_keyboard[0],
+            nav_kb(flow=MED_FLOW, lang=lang, show_back=True, show_skip=False).inline_keyboard[0],
         ]
     )
-    text = "When did you take it?"
+    text = t(lang, "med.time.title")
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -1127,9 +1170,10 @@ async def med_prompt_time_custom(update: Update, context: ContextTypes.DEFAULT_T
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MED_FLOW), {})
-    text = "Send time as `HH:MM` (today) or `yesterday HH:MM`."
-    kb = nav_kb(flow=MED_FLOW, show_back=True, show_skip=False)
+    text = t(lang, "med.time.custom_help")
+    kb = nav_kb(flow=MED_FLOW, lang=lang, show_back=True, show_skip=False)
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
     elif update.message:
@@ -1146,7 +1190,7 @@ async def med_time_custom_msg(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
     parsed = parse_user_time(update.message.text or "", user_tz=user.timezone, now_utc=now_utc())
     if not parsed:
-        await update.message.reply_text("Couldn’t parse that time. Try `13:10` or `yesterday 21:30`.")
+        await update.message.reply_text(t(getattr(user, "language", "en"), "meal.time.parse_fail"))
         return MED_TIME_CUSTOM
     draft = context.user_data.setdefault(_draft_key(MED_FLOW), {})
     draft["taken_at_utc"] = parsed.isoformat()
@@ -1158,21 +1202,23 @@ async def med_prompt_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE,
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MED_FLOW), {})
     taken_at = datetime.fromisoformat(draft.get("taken_at_utc")) if draft.get("taken_at_utc") else now_utc()
+    dosage = draft.get("dosage") or t(lang, "common.none")
     text = (
-        "**Medicine draft**\n"
-        f"Name: {draft.get('name')}\n"
-        f"Dosage: {draft.get('dosage') or '(none)'}\n"
-        f"Time: {fmt_dt_user(taken_at, user_tz=user.timezone)}\n\n"
-        "Save?"
+        f"{t(lang, 'med.confirm.title')}\n"
+        f"{t(lang, 'med.confirm.name')}: {draft.get('name')}\n"
+        f"{t(lang, 'med.confirm.dosage')}: {dosage}\n"
+        f"{t(lang, 'med.confirm.time')}: {fmt_dt_user(taken_at, user_tz=user.timezone)}\n\n"
+        f"{t(lang, 'med.confirm.save_q')}"
     )
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Save", callback_data="med:confirm:save"),
-                InlineKeyboardButton("Back", callback_data="med:nav:back"),
-                InlineKeyboardButton("Cancel", callback_data="med:nav:cancel"),
+                InlineKeyboardButton(t(lang, "common.save"), callback_data="med:confirm:save"),
+                InlineKeyboardButton(t(lang, "common.back"), callback_data="med:nav:back"),
+                InlineKeyboardButton(t(lang, "common.cancel"), callback_data="med:nav:cancel"),
             ]
         ]
     )
@@ -1195,6 +1241,7 @@ async def med_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not cb or cb.flow != MED_FLOW or cb.kind != "confirm" or cb.value != "save":
         return MED_CONFIRM
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.get(_draft_key(MED_FLOW), {})
     create_medication(
         user,
@@ -1206,9 +1253,9 @@ async def med_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop(_draft_key(MED_FLOW), None)
     context.user_data.pop(_hist_key(MED_FLOW), None)
     context.user_data.pop(_step_key(MED_FLOW), None)
-    await q.edit_message_text("Medicine logged.\n\n" + DISCLAIMERS_TEXT)
+    await q.edit_message_text(t(lang, "med.logged", disclaimer=t(lang, "disclaimer.text")))
     if q.message:
-        await q.message.reply_text("What next?", reply_markup=main_menu_keyboard())
+        await q.message.reply_text(t(lang, "common.what_next"), reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -1246,6 +1293,7 @@ async def morning_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     loaded = _store.load(user, flow=MORNING_FLOW, now_utc=now_utc())
     if loaded:
         context.user_data[_draft_key(MORNING_FLOW)] = loaded.draft
@@ -1253,13 +1301,13 @@ async def morning_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         kb = InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("Resume draft", callback_data="morning:resume:yes"),
-                    InlineKeyboardButton("Discard", callback_data="morning:resume:no"),
+                    InlineKeyboardButton(t(lang, "common.resume_draft"), callback_data="morning:resume:yes"),
+                    InlineKeyboardButton(t(lang, "common.discard"), callback_data="morning:resume:no"),
                 ]
             ]
         )
         if update.message:
-            await update.message.reply_text("You have an unfinished morning-check draft. Resume?", reply_markup=kb)
+            await update.message.reply_text(t(lang, "morning.unfinished_resume"), reply_markup=kb)
         return MORN_RESUME
     context.user_data[_draft_key(MORNING_FLOW)] = {}
     context.user_data[_hist_key(MORNING_FLOW)] = []
@@ -1304,23 +1352,24 @@ async def morning_prompt_sleep(update: Update, context: ContextTypes.DEFAULT_TYP
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MORNING_FLOW), {})
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Left", callback_data="morning:sleep:left"),
-                InlineKeyboardButton("Right", callback_data="morning:sleep:right"),
-                InlineKeyboardButton("Back", callback_data="morning:sleep:back"),
+                InlineKeyboardButton(sleep_position_label(lang, "left"), callback_data="morning:sleep:left"),
+                InlineKeyboardButton(sleep_position_label(lang, "right"), callback_data="morning:sleep:right"),
+                InlineKeyboardButton(sleep_position_label(lang, "back"), callback_data="morning:sleep:back"),
             ],
             [
-                InlineKeyboardButton("Stomach", callback_data="morning:sleep:stomach"),
-                InlineKeyboardButton("Mixed", callback_data="morning:sleep:mixed"),
-                InlineKeyboardButton("Unknown", callback_data="morning:sleep:unknown"),
+                InlineKeyboardButton(sleep_position_label(lang, "stomach"), callback_data="morning:sleep:stomach"),
+                InlineKeyboardButton(sleep_position_label(lang, "mixed"), callback_data="morning:sleep:mixed"),
+                InlineKeyboardButton(sleep_position_label(lang, "unknown"), callback_data="morning:sleep:unknown"),
             ],
-            nav_kb(flow=MORNING_FLOW, show_back=False, show_skip=False).inline_keyboard[0],
+            nav_kb(flow=MORNING_FLOW, lang=lang, show_back=False, show_skip=False).inline_keyboard[0],
         ]
     )
-    text = "Sleep position:"
+    text = t(lang, "morning.sleep.title")
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -1350,6 +1399,7 @@ async def morning_prompt_stress(update: Update, context: ContextTypes.DEFAULT_TY
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MORNING_FLOW), {})
     kb = InlineKeyboardMarkup(
         [
@@ -1360,10 +1410,10 @@ async def morning_prompt_stress(update: Update, context: ContextTypes.DEFAULT_TY
                 InlineKeyboardButton("4", callback_data="morning:stress:4"),
                 InlineKeyboardButton("5", callback_data="morning:stress:5"),
             ],
-            nav_kb(flow=MORNING_FLOW, show_back=True, show_skip=False).inline_keyboard[0],
+            nav_kb(flow=MORNING_FLOW, lang=lang, show_back=True, show_skip=False).inline_keyboard[0],
         ]
     )
-    text = "Stress level (1–5):"
+    text = t(lang, "morning.stress.title")
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -1393,22 +1443,23 @@ async def morning_prompt_activity(update: Update, context: ContextTypes.DEFAULT_
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MORNING_FLOW), {})
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("None", callback_data="morning:activity:none"),
-                InlineKeyboardButton("Light", callback_data="morning:activity:light"),
+                InlineKeyboardButton(activity_level_label(lang, "none"), callback_data="morning:activity:none"),
+                InlineKeyboardButton(activity_level_label(lang, "light"), callback_data="morning:activity:light"),
             ],
             [
-                InlineKeyboardButton("Moderate", callback_data="morning:activity:moderate"),
-                InlineKeyboardButton("Intense", callback_data="morning:activity:intense"),
+                InlineKeyboardButton(activity_level_label(lang, "moderate"), callback_data="morning:activity:moderate"),
+                InlineKeyboardButton(activity_level_label(lang, "intense"), callback_data="morning:activity:intense"),
             ],
-            [InlineKeyboardButton("Unknown", callback_data="morning:activity:unknown")],
-            nav_kb(flow=MORNING_FLOW, show_back=True, show_skip=False).inline_keyboard[0],
+            [InlineKeyboardButton(activity_level_label(lang, "unknown"), callback_data="morning:activity:unknown")],
+            nav_kb(flow=MORNING_FLOW, lang=lang, show_back=True, show_skip=False).inline_keyboard[0],
         ]
     )
-    text = "Physical activity level:"
+    text = t(lang, "morning.activity.title")
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -1438,9 +1489,10 @@ async def morning_prompt_notes(update: Update, context: ContextTypes.DEFAULT_TYP
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MORNING_FLOW), {})
-    text = "Optional activity notes (e.g., walk/gym). Send text, or tap Skip."
-    kb = nav_kb(flow=MORNING_FLOW, show_back=True, show_skip=True)
+    text = t(lang, "morning.notes.prompt")
+    kb = nav_kb(flow=MORNING_FLOW, lang=lang, show_back=True, show_skip=True)
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -1465,23 +1517,25 @@ async def morning_prompt_confirm(update: Update, context: ContextTypes.DEFAULT_T
     if not update.effective_user:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MORNING_FLOW), {})
     local_date = now_utc().astimezone(ZoneInfo(user.timezone)).date()
+    notes = draft.get("activity_notes") or t(lang, "common.none")
     text = (
-        "**Morning check draft**\n"
-        f"Date: {local_date.isoformat()}\n"
-        f"Sleep: {draft.get('sleep_position', 'unknown')}\n"
-        f"Stress: {draft.get('stress_level', 3)}/5\n"
-        f"Activity: {draft.get('activity_level', 'unknown')}\n"
-        f"Notes: {draft.get('activity_notes') or '(none)'}\n\n"
-        "Save?"
+        f"{t(lang, 'morning.confirm.title')}\n"
+        f"{t(lang, 'morning.confirm.date')}: {local_date.isoformat()}\n"
+        f"{t(lang, 'morning.confirm.sleep')}: {sleep_position_label(lang, draft.get('sleep_position', 'unknown'))}\n"
+        f"{t(lang, 'morning.confirm.stress')}: {draft.get('stress_level', 3)}/5\n"
+        f"{t(lang, 'morning.confirm.activity')}: {activity_level_label(lang, draft.get('activity_level', 'unknown'))}\n"
+        f"{t(lang, 'morning.confirm.notes')}: {notes}\n\n"
+        f"{t(lang, 'morning.confirm.save_q')}"
     )
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Save", callback_data="morning:confirm:save"),
-                InlineKeyboardButton("Back", callback_data="morning:nav:back"),
-                InlineKeyboardButton("Cancel", callback_data="morning:nav:cancel"),
+                InlineKeyboardButton(t(lang, "common.save"), callback_data="morning:confirm:save"),
+                InlineKeyboardButton(t(lang, "common.back"), callback_data="morning:nav:back"),
+                InlineKeyboardButton(t(lang, "common.cancel"), callback_data="morning:nav:cancel"),
             ]
         ]
     )
@@ -1504,6 +1558,7 @@ async def morning_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not cb or cb.flow != MORNING_FLOW or cb.kind != "confirm" or cb.value != "save":
         return MORN_CONFIRM
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", "en")
     draft = context.user_data.get(_draft_key(MORNING_FLOW), {})
     local_date = now_utc().astimezone(ZoneInfo(user.timezone)).date()
     create_morning_check(
@@ -1518,9 +1573,9 @@ async def morning_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data.pop(_draft_key(MORNING_FLOW), None)
     context.user_data.pop(_hist_key(MORNING_FLOW), None)
     context.user_data.pop(_step_key(MORNING_FLOW), None)
-    await q.edit_message_text("Morning check saved.\n\n" + DISCLAIMERS_TEXT)
+    await q.edit_message_text(t(lang, "morning.logged", disclaimer=t(lang, "disclaimer.text")))
     if q.message:
-        await q.message.reply_text("What next?", reply_markup=main_menu_keyboard())
+        await q.message.reply_text(t(lang, "common.what_next"), reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
 

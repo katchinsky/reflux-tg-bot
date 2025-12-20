@@ -26,6 +26,22 @@ def init_db(db_path: str) -> None:
     from app.db.models import Base  # noqa: WPS433
 
     Base.metadata.create_all(bind=engine)
+    _migrate_schema(engine)
+
+
+def _migrate_schema(engine) -> None:
+    """
+    Lightweight, idempotent schema migrations for sqlite.
+
+    This project does not use Alembic. We maintain backwards compatibility for existing
+    local DBs by applying additive migrations at startup.
+    """
+    with engine.connect() as conn:
+        # users.language (EN/RU)
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(users)").fetchall()}
+        if "language" not in cols:
+            conn.exec_driver_sql("ALTER TABLE users ADD COLUMN language VARCHAR(8) NOT NULL DEFAULT 'en'")
+            conn.commit()
 
 
 @contextmanager

@@ -8,10 +8,8 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
         [
             ["/meal", "/symptom"],
             ["/med", "/morning"],
-            ["/report", "/settings"],
+            ["/report", "/export"],
         ],
         resize_keyboard=True,
         is_persistent=True,
     )
-
-
