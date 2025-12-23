@@ -15,6 +15,9 @@ class Settings:
     webhook_url: str | None
     webhook_path: str
     webhook_secret_token: str | None
+    openai_api_key: str | None
+    openai_model_extract: str
+    openai_model_rerank: str
 
 
 def load_settings() -> Settings:
@@ -36,6 +39,9 @@ def load_settings() -> Settings:
         webhook_url=os.getenv("WEBHOOK_URL", "").strip() or None,
         webhook_path=os.getenv("WEBHOOK_PATH", "/telegram").strip() or "/telegram",
         webhook_secret_token=os.getenv("WEBHOOK_SECRET_TOKEN", "").strip() or None,
+        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip() or None,
+        openai_model_extract=os.getenv("OPENAI_MODEL_EXTRACT", "gpt-4o-mini").strip() or "gpt-4o-mini",
+        openai_model_rerank=os.getenv("OPENAI_MODEL_RERANK", "gpt-4o-mini").strip() or "gpt-4o-mini",
     )
 
 

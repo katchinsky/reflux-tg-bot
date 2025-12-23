@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -27,6 +28,7 @@ from app.core.i18n import (
 from app.core.state import StateStore
 from app.core.timeparse import parse_user_time
 from app.services.logging import create_meal, create_medication, create_morning_check, create_symptom
+from app.services.meal_taxonomy import process_meal
 from app.services.users import ensure_user
 
 
@@ -486,7 +488,7 @@ async def meal_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
     lang = getattr(user, "language", "en")
     draft = context.user_data.get(_draft_key(MEAL_FLOW), {})
-    create_meal(
+    meal = create_meal(
         user,
         occurred_at_utc=datetime.fromisoformat(draft.get("occurred_at_utc")) if draft.get("occurred_at_utc") else now_utc(),
         notes_text=str(draft.get("notes_text", "")),
@@ -495,6 +497,47 @@ async def meal_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         fat_level=str(draft.get("fat_level", "unknown")),
         posture_after=str(draft.get("posture_after", "unknown")),
     )
+
+    # Fire-and-forget: run LLM meal parsing + taxonomy linking after saving.
+    chat_id = None
+    if q.message:
+        chat_id = q.message.chat_id
+    openai_api_key = context.bot_data.get("openai_api_key")
+    openai_model_extract = context.bot_data.get("openai_model_extract", "gpt-4o-mini")
+    openai_model_rerank = context.bot_data.get("openai_model_rerank", "gpt-4o-mini")
+    notes_text = str(draft.get("notes_text", "")).strip()
+
+    async def _run_and_notify() -> None:
+        if not chat_id or not openai_api_key or not notes_text:
+            return
+        results = await asyncio.to_thread(
+            process_meal,
+            user_id=user.id,
+            meal_id=meal.id,
+            notes_text=notes_text,
+            lang=lang,
+            openai_api_key=openai_api_key,
+            openai_model_extract=str(openai_model_extract),
+            openai_model_rerank=str(openai_model_rerank),
+        )
+        if not results:
+            return
+        header = "Detected items and category suggestions:" if lang != "ru" else "Распознанные продукты и категории:"
+        lines = [header]
+        for r in results:
+            item = r.item.normalized
+            if r.item.item_type:
+                item = f"{item} ({r.item.item_type})"
+            lines.append(f"- {item}")
+            if r.top3:
+                for c in r.top3[:3]:
+                    lines.append(f"  - {c.label} ({c.category_id}) — {c.score:.0%}")
+            elif r.abstain:
+                reason = r.abstain_reason or "no good match"
+                lines.append(f"  - (no match) {reason}")
+        await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+
+    asyncio.create_task(_run_and_notify())
     _store.clear(user, flow=MEAL_FLOW)
     context.user_data.pop(_draft_key(MEAL_FLOW), None)
     context.user_data.pop(_hist_key(MEAL_FLOW), None)

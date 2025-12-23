@@ -40,6 +40,42 @@ class Meal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class MealItem(Base):
+    """
+    Extracted food/drink items from a meal note (LLM-powered).
+    """
+
+    __tablename__ = "meal_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    meal_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    item_type: Mapped[str] = mapped_column(String(16), index=True)  # dish|ingredient|drink|product
+    text_span: Mapped[str] = mapped_column(Text, default="")
+    normalized: Mapped[str] = mapped_column(Text, default="")
+    modifiers_json: Mapped[str] = mapped_column(Text, default="[]")
+    confidence: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
+    llm_model: Mapped[str] = mapped_column(String(64), default="")
+    prompt_version: Mapped[str] = mapped_column(String(32), default="v1")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class MealItemCategory(Base):
+    """
+    Top-K taxonomy category suggestions per extracted MealItem.
+    """
+
+    __tablename__ = "meal_item_categories"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    meal_item_id: Mapped[str] = mapped_column(String(36), index=True)
+    category_id: Mapped[str] = mapped_column(String(128), index=True)
+    rank: Mapped[int] = mapped_column(Integer)  # 1..3
+    score: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
+    meta_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class Symptom(Base):
     __tablename__ = "symptoms"
 

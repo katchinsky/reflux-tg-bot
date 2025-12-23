@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 import io
 from zoneinfo import ZoneInfo
@@ -143,6 +144,10 @@ async def export_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 def build_handlers(app: Application, *, default_timezone: str) -> None:
     app.bot_data["default_timezone"] = default_timezone
+    # Optional LLM pipeline settings (meal parsing + taxonomy linking)
+    app.bot_data["openai_api_key"] = (os.getenv("OPENAI_API_KEY", "").strip() or None)
+    app.bot_data["openai_model_extract"] = (os.getenv("OPENAI_MODEL_EXTRACT", "gpt-4o-mini").strip() or "gpt-4o-mini")
+    app.bot_data["openai_model_rerank"] = (os.getenv("OPENAI_MODEL_RERANK", "gpt-4o-mini").strip() or "gpt-4o-mini")
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("lang", lang_command))
     app.add_handler(CommandHandler("report", report))
