@@ -506,6 +506,8 @@ async def meal_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     openai_api_key = context.bot_data.get("openai_api_key")
     openai_model_extract = context.bot_data.get("openai_model_extract", "gpt-4o-mini")
     openai_model_rerank = context.bot_data.get("openai_model_rerank", "gpt-4o-mini")
+    openai_timeout_s = float(context.bot_data.get("openai_timeout_s", 60.0))
+    openai_max_retries = int(context.bot_data.get("openai_max_retries", 4))
     notes_text = str(draft.get("notes_text", "")).strip()
 
     async def _run_and_notify() -> None:
@@ -520,6 +522,8 @@ async def meal_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             openai_api_key=openai_api_key,
             openai_model_extract=str(openai_model_extract),
             openai_model_rerank=str(openai_model_rerank),
+            openai_timeout_s=openai_timeout_s,
+            openai_max_retries=openai_max_retries,
         )
         if not results:
             return

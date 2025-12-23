@@ -44,7 +44,7 @@ class ItemLinkResult:
     abstain_reason: str | None
 
 
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 
 
 def _audit(user_id: str, *, event_type: str, payload: dict) -> None:
@@ -84,8 +84,10 @@ def extract_items(
     lang: str,
     openai_api_key: str,
     model: str,
+    timeout_s: float = 60.0,
+    max_retries: int = 4,
 ) -> tuple[list[ExtractedItem], str]:
-    chat = OpenAIChat(api_key=openai_api_key)
+    chat = OpenAIChat(api_key=openai_api_key, timeout_s=timeout_s, max_retries=max_retries)
     # system = (
     #     "You are an information extraction system.\n"
     #     "Extract food/drink items from messy meal descriptions.\n"
@@ -101,6 +103,16 @@ You are an information extraction system.
 Extract all food and drink items from unstructured or messy meal descriptions. Strictly avoid inferring, inventing, or including any quantities—if any quantity information appears in your output, detect and correct it before returning results.
 Normalize and translate item names into Russian and English.
 Return only a single valid JSON object with a top-level key 'items'.
+
+ IMPORTANT RULES FOR COMPOSITE DISHES:
+ - If a dish includes distinct ingredients/components (patterns like "X с Y", "X с Y и Z", lists after "с", "и", commas),
+   you MUST output:
+     (a) one item for the dish itself with type="dish" (e.g., "банановый смузи")
+     (b) separate items for EACH distinct ingredient with type="ingredient"
+         (e.g., "банан", "кокосовое молоко", "вишня", "клубника", "ежевика")
+ - Do this even if ingredients are not standalone words (e.g., "кокосовым молоком" -> "кокосовое молоко").
+ - Do not merge multiple fruits into one ingredient ("ягоды") if specific berries are named.
+ - Keep ingredient names as ingredients (not "dish") unless it's clearly a separate prepared dish.
 
 After extracting items, validate your output in the following manner:
     - Ensure every field is present in each item, in the specified order.
@@ -174,7 +186,15 @@ After producing your output, explicitly verify that it conforms to the required 
             )
         )
 
-    return items, res.model
+    # De-duplicate identical normalized items (keep the highest confidence).
+    dedup: dict[tuple[str, str], ExtractedItem] = {}
+    for it in items:
+        key = (it.item_type, it.normalized.strip().lower())
+        prev = dedup.get(key)
+        if prev is None or it.confidence > prev.confidence:
+            dedup[key] = it
+
+    return list(dedup.values()), res.model
 
 
 def _candidate_pack(
@@ -199,6 +219,8 @@ def link_item_top3(
     openai_api_key: str,
     model: str,
     candidate_limit: int = 30,
+    timeout_s: float = 60.0,
+    max_retries: int = 4,
 ) -> tuple[ItemLinkResult, str]:
     idx = get_taxonomy_index()
 
@@ -231,10 +253,67 @@ def link_item_top3(
         prefer_broader=True,
         always_include_best=True,
     )
+
+    # Expand candidate set with parents so the reranker can pick a broader category when needed.
+    # We keep parent candidates with a slightly lower retrieval score than their child.
+    expanded: dict[str, TaxonomyCandidate] = {c.category_id: c for c in candidates}
+    parent_added = 0
+    for c in list(candidates):
+        parent_ids = idx.get_parent_ids(c.category_id)
+        # Walk full parent chain (bounded by taxonomy); stop if something looks off.
+        seen: set[str] = set()
+        stack = list(parent_ids)
+        while stack:
+            pid = stack.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            if not pid:
+                continue
+            # Parent candidate gets a decayed score so original lexical hits still dominate.
+            if pid not in expanded:
+                parent_added += 1
+                expanded[pid] = TaxonomyCandidate(
+                    category_id=pid,
+                    label=idx.get_label(pid, prefer_lang=lang),
+                    score=max(0, int(round(c.score * 0.85))),
+                    level=idx.get_level(pid),
+                    parent_ids=idx.get_parent_ids(pid),
+                )
+            # Continue walking up.
+            stack.extend(idx.get_parent_ids(pid))
+
+    expanded_list = sorted(expanded.values(), key=lambda cc: (cc.score, -cc.level), reverse=True)
+    # Re-diversify after expansion, still favoring broad categories.
+    candidates = idx.diversify_by_level(
+        expanded_list,
+        limit=candidate_limit,
+        max_per_level=6,
+        prefer_broader=True,
+        always_include_best=True,
+    )
+
+    if logger.isEnabledFor(logging.INFO):
+        sample = [
+            {"id": c.category_id, "lvl": int(c.level), "s": int(c.score)}
+            for c in candidates[: min(12, len(candidates))]
+        ]
+        logger.info(
+            "taxonomy candidates item=%s type=%s queries=%s raw=%d diversified=%d expanded=%d (+parents=%d) final=%d sample=%s",
+            item.normalized,
+            item.item_type,
+            uniq_queries,
+            len(candidates_raw),
+            min(candidate_limit, len(candidates)),
+            len(expanded_list),
+            parent_added,
+            len(candidates),
+            sample,
+        )
     packed = [_candidate_pack(c, prefer_lang=lang) for c in candidates]
 
     # Rerank with LLM.
-    chat = OpenAIChat(api_key=openai_api_key)
+    chat = OpenAIChat(api_key=openai_api_key, timeout_s=timeout_s, max_retries=max_retries)
     # system = (
     #     "You map an item to taxonomy categories.\n"
     #     "Return ONLY JSON object with keys: top_k, abstain, abstain_reason.\n"
@@ -267,7 +346,7 @@ Example when confident matches exist:
 {
   "top_k": [
     {"id": "en:fresh-strawberry", "score": 0.93, "reason": "Matches item description."},
-    {"id": "en:strawberry-jelly", "score": 0.78, "reason": "Related to strawberries, but the form was not specified in the description."}
+    {"id": "en:strawberry-jam", "score": 0.78, "reason": "Related to strawberries, but the form was not specified in the description."}
   ],
   "abstain": false,
   "abstain_reason": null
@@ -298,7 +377,7 @@ Example when abstaining:
         {
             "item": {
                 "type": item.item_type,
-                "normalized": item.normalized,
+                "normalized_ru": item.normalized,
                 "normalized_en": item.normalized_en,
                 "modifiers": item.modifiers,
             },
@@ -416,6 +495,8 @@ def process_meal(
     openai_api_key: str | None,
     openai_model_extract: str,
     openai_model_rerank: str,
+    openai_timeout_s: float = 60.0,
+    openai_max_retries: int = 4,
 ) -> list[ItemLinkResult]:
     """
     Full pipeline: extract -> candidate retrieval -> rerank -> persist.
@@ -428,7 +509,12 @@ def process_meal(
 
     try:
         items, extract_model = extract_items(
-            notes_text=notes_text, lang=lang, openai_api_key=openai_api_key, model=openai_model_extract
+            notes_text=notes_text,
+            lang=lang,
+            openai_api_key=openai_api_key,
+            model=openai_model_extract,
+            timeout_s=openai_timeout_s,
+            max_retries=openai_max_retries,
         )
         _audit(
             user_id,
@@ -444,6 +530,8 @@ def process_meal(
                 lang=lang,
                 openai_api_key=openai_api_key,
                 model=openai_model_rerank,
+                timeout_s=openai_timeout_s,
+                max_retries=openai_max_retries,
             )
             rerank_model_used = rerank_model
             results.append(r)

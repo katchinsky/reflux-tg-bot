@@ -105,6 +105,8 @@ def main() -> int:
                 openai_api_key=api_key,
                 openai_model_extract=settings.openai_model_extract,
                 openai_model_rerank=settings.openai_model_rerank,
+                openai_timeout_s=settings.openai_timeout_s,
+                openai_max_retries=settings.openai_max_retries,
             )
             processed += 1
             print(

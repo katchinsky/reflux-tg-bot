@@ -18,6 +18,8 @@ class Settings:
     openai_api_key: str | None
     openai_model_extract: str
     openai_model_rerank: str
+    openai_timeout_s: float
+    openai_max_retries: int
 
 
 def load_settings() -> Settings:
@@ -42,6 +44,8 @@ def load_settings() -> Settings:
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip() or None,
         openai_model_extract=os.getenv("OPENAI_MODEL_EXTRACT", "gpt-4o-mini").strip() or "gpt-4o-mini",
         openai_model_rerank=os.getenv("OPENAI_MODEL_RERANK", "gpt-4o-mini").strip() or "gpt-4o-mini",
+        openai_timeout_s=float(os.getenv("OPENAI_TIMEOUT_S", "60").strip() or "60"),
+        openai_max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "4").strip() or "4"),
     )
 
 
