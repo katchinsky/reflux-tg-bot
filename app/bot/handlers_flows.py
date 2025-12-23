@@ -28,6 +28,7 @@ from app.core.i18n import (
 from app.core.state import StateStore
 from app.core.timeparse import parse_user_time
 from app.services.logging import create_meal, create_medication, create_morning_check, create_symptom
+from app.services.medications import top_medication_names
 from app.services.meal_taxonomy import process_meal
 from app.services.users import ensure_user
 
@@ -1038,6 +1039,8 @@ async def symptom_nav_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 MED_FLOW = "med"
 MED_RESUME, MED_NAME, MED_DOSAGE, MED_TIME, MED_TIME_CUSTOM, MED_CONFIRM = range(6)
+_MED_TOP_NAMES_KEY = "med:top_names"
+_MED_NAME_NO_SUGGEST_KEY = "med:name_no_suggest"
 
 async def med_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return await _cancel(update, context, flow=MED_FLOW)
@@ -1048,6 +1051,8 @@ async def med_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
     lang = getattr(user, "language", "en")
+    # Reset name-step UI mode for a fresh entry into the flow.
+    context.user_data[_MED_NAME_NO_SUGGEST_KEY] = False
     loaded = _store.load(user, flow=MED_FLOW, now_utc=now_utc())
     if loaded:
         context.user_data[_draft_key(MED_FLOW)] = loaded.draft
@@ -1109,7 +1114,24 @@ async def med_prompt_name(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
     lang = getattr(user, "language", "en")
     draft = context.user_data.setdefault(_draft_key(MED_FLOW), {})
     text = t(lang, "med.name.prompt")
-    kb = nav_kb(flow=MED_FLOW, lang=lang, show_back=False, show_skip=False)
+    no_suggest = bool(context.user_data.get(_MED_NAME_NO_SUGGEST_KEY))
+    top_names = top_medication_names(user, limit=3) if not no_suggest else []
+    context.user_data[_MED_TOP_NAMES_KEY] = top_names
+    if top_names:
+        rows: list[list[InlineKeyboardButton]] = []
+        row: list[InlineKeyboardButton] = []
+        for i, name in enumerate(top_names):
+            row.append(InlineKeyboardButton(name, callback_data=f"med:namepick:{i}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([InlineKeyboardButton(t(lang, "med.name.other_btn"), callback_data="med:nameother:1")])
+        rows.append(nav_kb(flow=MED_FLOW, lang=lang, show_back=False, show_skip=False).inline_keyboard[0])
+        kb = InlineKeyboardMarkup(rows)
+    else:
+        kb = nav_kb(flow=MED_FLOW, lang=lang, show_back=False, show_skip=False)
     if edit_message and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     elif update.message:
@@ -1118,6 +1140,46 @@ async def med_prompt_name(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
     _push_state(context, MED_FLOW, MED_NAME)
     _store.save(user, flow=MED_FLOW, step="name", draft=draft, now_utc=now_utc())
     return MED_NAME
+
+
+async def med_namepick_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    if not q or not update.effective_user:
+        return ConversationHandler.END
+    await q.answer()
+    cb = parse_cb(q.data)
+    if not cb or cb.flow != MED_FLOW or cb.kind != "namepick":
+        return MED_NAME
+    try:
+        idx = int(cb.value)
+    except Exception:
+        return MED_NAME
+
+    user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    top_names = context.user_data.get(_MED_TOP_NAMES_KEY) or []
+    if not isinstance(top_names, list) or idx < 0 or idx >= len(top_names):
+        return MED_NAME
+    picked = str(top_names[idx]).strip()
+    if not picked:
+        return MED_NAME
+
+    draft = context.user_data.setdefault(_draft_key(MED_FLOW), {})
+    draft["name"] = picked
+    _store.save(user, flow=MED_FLOW, step="dosage", draft=draft, now_utc=now_utc())
+    return await med_prompt_dosage(update, context, edit_message=True)
+
+
+async def med_nameother_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    if not q or not update.effective_user:
+        return ConversationHandler.END
+    await q.answer()
+    cb = parse_cb(q.data)
+    if not cb or cb.flow != MED_FLOW or cb.kind != "nameother":
+        return MED_NAME
+    # Switch to plain free-text input by hiding suggestion buttons.
+    context.user_data[_MED_NAME_NO_SUGGEST_KEY] = True
+    return await med_prompt_name(update, context, edit_message=True)
 
 
 async def med_name_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1743,6 +1805,8 @@ def medicine_conversation() -> ConversationHandler:
             MED_RESUME: [CallbackQueryHandler(med_resume_cb, pattern=r"^med:resume:")],
             MED_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, med_name_msg),
+                CallbackQueryHandler(med_namepick_cb, pattern=r"^med:namepick:"),
+                CallbackQueryHandler(med_nameother_cb, pattern=r"^med:nameother:"),
                 CallbackQueryHandler(med_nav_cb, pattern=r"^med:nav:"),
             ],
             MED_DOSAGE: [
