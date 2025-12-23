@@ -12,6 +12,9 @@ class Settings:
     database_url: str | None
     db_path: str
     default_timezone: str
+    webhook_url: str | None
+    webhook_path: str
+    webhook_secret_token: str | None
 
 
 def load_settings() -> Settings:
@@ -30,6 +33,9 @@ def load_settings() -> Settings:
         db_path=os.getenv("DB_PATH", "reflux.db").strip() or "reflux.db",
         default_timezone=os.getenv("DEFAULT_TIMEZONE", "Europe/Belgrade").strip()
         or "Europe/Belgrade",
+        webhook_url=os.getenv("WEBHOOK_URL", "").strip() or None,
+        webhook_path=os.getenv("WEBHOOK_PATH", "/telegram").strip() or "/telegram",
+        webhook_secret_token=os.getenv("WEBHOOK_SECRET_TOKEN", "").strip() or None,
     )
 
 
