@@ -180,6 +180,14 @@ def _start_http_server(
                 from_date = (qs.get("from") or [""])[0]
                 to_date = (qs.get("to") or [""])[0]
                 symptom_type = (qs.get("symptom_type") or [""])[0] or None
+                category_level = (qs.get("category_level") or [""])[0] or None
+                bucket_hours_raw = (qs.get("bucket_hours") or [""])[0] or None
+                bucket_hours: int | None = None
+                if bucket_hours_raw:
+                    try:
+                        bucket_hours = int(bucket_hours_raw)
+                    except Exception:
+                        bucket_hours = None
 
                 from app.services import dashboard_metrics
 
@@ -187,7 +195,10 @@ def _start_http_server(
                     self._send_json(
                         status=200,
                         obj=dashboard_metrics.product_categories(
-                            user_id=user_id, from_date=from_date, to_date=to_date
+                            user_id=user_id,
+                            from_date=from_date,
+                            to_date=to_date,
+                            category_level=category_level,
                         ),
                     )
                     return
@@ -195,7 +206,11 @@ def _start_http_server(
                     self._send_json(
                         status=200,
                         obj=dashboard_metrics.symptoms(
-                            user_id=user_id, from_date=from_date, to_date=to_date, symptom_type=symptom_type
+                            user_id=user_id,
+                            from_date=from_date,
+                            to_date=to_date,
+                            symptom_type=symptom_type,
+                            bucket_hours=bucket_hours,
                         ),
                     )
                     return
@@ -203,6 +218,18 @@ def _start_http_server(
                     self._send_json(
                         status=200,
                         obj=dashboard_metrics.correlations(user_id=user_id, from_date=from_date, to_date=to_date),
+                    )
+                    return
+                if path == "/api/dashboard/timeline":
+                    self._send_json(
+                        status=200,
+                        obj=dashboard_metrics.timeline(user_id=user_id, from_date=from_date, to_date=to_date),
+                    )
+                    return
+                if path == "/api/dashboard/medications":
+                    self._send_json(
+                        status=200,
+                        obj=dashboard_metrics.medications(user_id=user_id, from_date=from_date, to_date=to_date),
                     )
                     return
 

@@ -18,6 +18,7 @@ def _page(title: str, body_html: str) -> str:
       .card {{ border: 1px solid rgba(127,127,127,0.35); border-radius: 10px; padding: 14px; margin: 14px 0; }}
       .row {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
       input[type="text"], input[type="date"] {{ padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(127,127,127,0.5); min-width: 160px; }}
+      select {{ padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(127,127,127,0.5); background: transparent; }}
       button {{ padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(127,127,127,0.5); background: transparent; cursor: pointer; }}
       table {{ width: 100%; border-collapse: collapse; }}
       th, td {{ padding: 8px 6px; border-bottom: 1px solid rgba(127,127,127,0.25); text-align: left; }}
@@ -73,6 +74,16 @@ def render_dashboard() -> str:
           <span class="muted">Custom:</span>
           <input id="from" type="date" />
           <input id="to" type="date" />
+          <span class="muted">Category level:</span>
+          <select id="catLevel">
+            <option value="lowest">Lowest</option>
+            <option value="0">0</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+          </select>
           <button id="apply">Apply</button>
         </div>
         <p id="status" class="muted"></p>
@@ -86,23 +97,41 @@ def render_dashboard() -> str:
 
       <div class="card">
         <h3>Symptom statistics</h3>
-        <canvas id="symDailyChart" height="220"></canvas>
+        <div class="row">
+          <span class="muted">Timeline buckets:</span>
+          <select id="symBucket">
+            <option value="24">Daily</option>
+            <option value="3">3 hours</option>
+          </select>
+        </div>
+        <canvas id="symDailyChart" height="120"></canvas>
         <div class="row">
           <div style="flex:1; min-width: 280px;">
             <h4>By type</h4>
-            <canvas id="symTypeChart" height="220"></canvas>
+            <canvas id="symTypeChart" height="120"></canvas>
           </div>
           <div style="flex:1; min-width: 280px;">
             <h4>Intensity distribution</h4>
-            <canvas id="symHistChart" height="220"></canvas>
+            <canvas id="symHistChart" height="120"></canvas>
           </div>
         </div>
+      </div>
+
+      <div class="card">
+        <h3>Medications</h3>
+        <table id="medsTable"></table>
       </div>
 
       <div class="card">
         <h3>Possible triggers (exploratory)</h3>
         <p class="muted">These are statistical associations only and not a diagnosis.</p>
         <table id="corrTable"></table>
+      </div>
+
+      <div class="card">
+        <h3>Timeline (meals & symptoms)</h3>
+        <p class="muted">A combined chronological list in your timezone.</p>
+        <table id="timelineTable"></table>
       </div>
 
       <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>

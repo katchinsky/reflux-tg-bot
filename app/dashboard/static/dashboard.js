@@ -41,6 +41,7 @@ let catChart = null;
 let symDailyChart = null;
 let symTypeChart = null;
 let symHistChart = null;
+let medsChart = null;
 
 function destroyChart(ch) {
   try {
@@ -50,12 +51,20 @@ function destroyChart(ch) {
 
 async function refresh(from, to) {
   setStatus("Loading…");
-  const qp = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const catLevelEl = document.getElementById("catLevel");
+  const catLevel = catLevelEl ? catLevelEl.value : "lowest";
+  const symBucketEl = document.getElementById("symBucket");
+  const symBucket = symBucketEl ? symBucketEl.value : "24";
+  const qp = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&category_level=${encodeURIComponent(
+    catLevel
+  )}`;
 
-  const [cats, syms, cors] = await Promise.all([
+  const [cats, syms, meds, cors, tl] = await Promise.all([
     fetchJson(`/api/dashboard/product-categories?${qp}`),
-    fetchJson(`/api/dashboard/symptoms?${qp}`),
+    fetchJson(`/api/dashboard/symptoms?${qp}&bucket_hours=${encodeURIComponent(symBucket)}`),
+    fetchJson(`/api/dashboard/medications?${qp}`),
     fetchJson(`/api/dashboard/correlations?${qp}`),
+    fetchJson(`/api/dashboard/timeline?${qp}`),
   ]);
 
   // Categories
@@ -69,10 +78,13 @@ async function refresh(from, to) {
   });
 
   const catTable = document.getElementById("catTable");
-  const catBody = ensureTable(catTable, ["Category", "Meals", "Share %", "Symptom in 4h %"]);
+  const catBody = ensureTable(catTable, ["Category", "Parents", "Level", "Meals", "Share %", "Symptom in 4h %"]);
   for (const c of cats.categories || []) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${c.name}</td><td>${c.meal_count}</td><td>${c.share_pct.toFixed(
+    const parents = (c.parents || []).map((p) => p.name).join(" > ");
+    tr.innerHTML = `<td>${c.name}</td><td>${parents}</td><td>${c.level ?? ""}</td><td>${
+      c.meal_count
+    }</td><td>${c.share_pct.toFixed(
       1
     )}</td><td>${(c.symptom_window_rate_pct ?? 0).toFixed(1)}</td>`;
     catBody.appendChild(tr);
@@ -81,11 +93,33 @@ async function refresh(from, to) {
   // Symptoms daily
   const dailyLabels = (syms.daily || []).map((d) => d.date);
   const dailyCounts = (syms.daily || []).map((d) => d.count);
+  const dailyAvgIntensity = (syms.daily || []).map((d) => d.avg_intensity ?? 0);
   destroyChart(symDailyChart);
   symDailyChart = new Chart(document.getElementById("symDailyChart"), {
     type: "line",
-    data: { labels: dailyLabels, datasets: [{ label: "Symptoms per day", data: dailyCounts }] },
-    options: { responsive: true },
+    data: {
+      labels: dailyLabels,
+      datasets: [
+        {
+          label: "Symptoms per bucket",
+          data: dailyCounts,
+          yAxisID: "yCount",
+        },
+        {
+          label: "Avg intensity",
+          data: dailyAvgIntensity,
+          yAxisID: "yIntensity",
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        yCount: { type: "linear", position: "left", beginAtZero: true },
+        yIntensity: { type: "linear", position: "right", beginAtZero: true, min: 0, max: 10, grid: { drawOnChartArea: false } },
+      },
+    },
   });
 
   // Symptoms by type
@@ -108,6 +142,25 @@ async function refresh(from, to) {
     options: { responsive: true },
   });
 
+  // Medications
+  const medLabels = (meds.by_name || []).slice(0, 12).map((m) => m.name);
+  const medCounts = (meds.by_name || []).slice(0, 12).map((m) => m.count);
+  destroyChart(medsChart);
+  medsChart = new Chart(document.getElementById("medsChart"), {
+    type: "bar",
+    data: { labels: medLabels, datasets: [{ label: "Taken (count)", data: medCounts }] },
+    options: { responsive: true },
+  });
+  const medsTable = document.getElementById("medsTable");
+  const medsBody = ensureTable(medsTable, ["Medication", "Count", "Share %", "Last taken"]);
+  for (const m of meds.by_name || []) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${m.name}</td><td>${m.count}</td><td>${(m.share_pct ?? 0).toFixed(
+      1
+    )}</td><td>${m.last_taken_at ?? ""}</td>`;
+    medsBody.appendChild(tr);
+  }
+
   // Correlations
   const corrTable = document.getElementById("corrTable");
   const corrBody = ensureTable(corrTable, ["Feature", "Meals (n)", "Symptom after meal %", "Baseline %", "Delta (pp)"]);
@@ -118,6 +171,46 @@ async function refresh(from, to) {
       1
     )}</td><td>${baseline.toFixed(1)}</td><td>${f.delta_pct_points.toFixed(1)}</td>`;
     corrBody.appendChild(tr);
+  }
+
+  // Timeline
+  const tlTable = document.getElementById("timelineTable");
+  const tlBody = ensureTable(tlTable, ["When", "Kind", "Details"]);
+  for (const e of tl.events || []) {
+    const tr = document.createElement("tr");
+    let details = "";
+    if (e.kind === "meal") {
+      const bits = [];
+      if (e.notes) bits.push(e.notes);
+      const meta = [];
+      if (e.portion) meta.push(`portion=${e.portion}`);
+      if (e.fat) meta.push(`fat=${e.fat}`);
+      if (e.posture) meta.push(`posture=${e.posture}`);
+      if (meta.length) bits.push(meta.join(", "));
+      details = bits.join(" · ");
+    } else if (e.kind === "symptom") {
+      details = `${e.type ?? "Symptom"} (intensity ${e.intensity ?? 0})`;
+      if (e.duration_minutes != null) details += `, ${e.duration_minutes} min`;
+    } else if (e.kind === "medication") {
+      details = `${e.name ?? "Medication"}` + (e.dosage ? ` (${e.dosage})` : "");
+    } else {
+      details = "";
+    }
+    // Format the date and time for display
+    function formatDateTime(dtStr) {
+      if (!dtStr) return "";
+      const d = new Date(dtStr);
+      if (isNaN(d)) return dtStr; // fallback if invalid
+      // YYYY-MM-DD HH:MM (local)
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      const h = String(d.getHours()).padStart(2, "0");
+      const min = String(d.getMinutes()).padStart(2, "0");
+      return `${y}-${m}-${day} ${h}:${min}`;
+    }
+    tr.innerHTML = `<td>${formatDateTime(e.at)}</td><td>${e.kind ?? ""}</td><td>${details}</td>`;
+    tlBody.appendChild(tr);
   }
 
   setStatus(`Loaded ${from} → ${to}`);
@@ -136,6 +229,8 @@ window.addEventListener("DOMContentLoaded", () => {
   const applyEl = document.getElementById("apply");
   const last7El = document.getElementById("last7");
   const last30El = document.getElementById("last30");
+  const catLevelEl = document.getElementById("catLevel");
+  const symBucketEl = document.getElementById("symBucket");
 
   const init = lastNDays(7);
   fromEl.value = init.from;
@@ -146,6 +241,12 @@ window.addEventListener("DOMContentLoaded", () => {
     e.preventDefault();
     run();
   });
+  if (catLevelEl) {
+    catLevelEl.addEventListener("change", () => run());
+  }
+  if (symBucketEl) {
+    symBucketEl.addEventListener("change", () => run());
+  }
   last7El.addEventListener("click", (e) => {
     e.preventDefault();
     const r = lastNDays(7);

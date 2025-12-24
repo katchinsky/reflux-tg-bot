@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 
 from app.core.i18n import fat_label, portion_label, posture_label, symptom_type_label
-from app.db.models import Meal, MealItem, MealItemCategory, Symptom, User
+from app.db.models import Meal, MealItem, MealItemCategory, Medication, Symptom, User
 from app.db.session import get_session
 from app.services.taxonomy_index import get_taxonomy_index
 
@@ -83,6 +83,21 @@ def _symptoms_in_range(*, user_id: str, start_utc: datetime, end_excl_utc: datet
         return session.execute(stmt).scalars().all()
 
 
+def _medications_in_range(*, user_id: str, start_utc: datetime, end_excl_utc: datetime) -> list[Medication]:
+    with get_session() as session:
+        return (
+            session.execute(
+                select(Medication).where(
+                    Medication.user_id == user_id,
+                    Medication.taken_at >= start_utc,
+                    Medication.taken_at < end_excl_utc,
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
 def _meal_has_symptom_map(
     *,
     meals: list[Meal],
@@ -105,6 +120,25 @@ def _meal_has_symptom_map(
             s_at = _as_utc_aware(symptoms_sorted[j].started_at)
             has = s_at <= (m_at + window)
         out[m.id] = has
+    return out
+
+
+def _meal_id_to_item_types(*, user_id: str, start_utc: datetime, end_excl_utc: datetime) -> dict[str, set[str]]:
+    with get_session() as session:
+        rows = session.execute(
+            select(Meal.id, MealItem.item_type)
+            .select_from(Meal)
+            .join(MealItem, MealItem.meal_id == Meal.id)
+            .where(
+                Meal.user_id == user_id,
+                Meal.occurred_at >= start_utc,
+                Meal.occurred_at < end_excl_utc,
+            )
+        ).all()
+    out: dict[str, set[str]] = defaultdict(set)
+    for meal_id, item_type in rows:
+        if item_type:
+            out[str(meal_id)].add(str(item_type))
     return out
 
 
@@ -134,7 +168,54 @@ def _category_meals_map(
     return out
 
 
-def product_categories(*, user_id: str, from_date: str, to_date: str, now_utc: datetime | None = None) -> dict:
+def _pick_category_at_level(
+    idx,
+    category_id: str,
+    *,
+    target_level: int,
+    max_depth: int = 30,
+) -> str:
+    """
+    Pick a stable ancestor at a given taxonomy level.
+    Taxonomy can be a DAG; if multiple candidates exist, pick lexicographically smallest id.
+    """
+    start = str(category_id)
+    if idx.get_level(start) == target_level:
+        return start
+
+    seen: set[str] = set()
+    cur: set[str] = {start}
+    for _ in range(max_depth):
+        nxt: set[str] = set()
+        for c in cur:
+            if c in seen:
+                continue
+            seen.add(c)
+            for p in idx.get_parent_ids(c):
+                if not p:
+                    continue
+                if idx.get_level(p) == target_level:
+                    nxt.add(p)
+                else:
+                    nxt.add(p)
+        # If any in nxt are already at the desired level, choose among them.
+        candidates = [x for x in nxt if idx.get_level(x) == target_level]
+        if candidates:
+            return sorted(candidates)[0]
+        cur = nxt
+
+    # Fallback: can't reach target; keep original.
+    return start
+
+
+def product_categories(
+    *,
+    user_id: str,
+    from_date: str,
+    to_date: str,
+    category_level: str | None = None,
+    now_utc: datetime | None = None,
+) -> dict:
     user = _load_user(user_id)
     tz = ZoneInfo(user.timezone or "UTC")
     start_utc, end_excl_utc, d_from, d_to = _date_range_to_utc(tz, from_date, to_date, now_utc=now_utc)
@@ -155,15 +236,44 @@ def product_categories(*, user_id: str, from_date: str, to_date: str, now_utc: d
     idx = get_taxonomy_index()
     prefer_lang = getattr(user, "language", None) or "en"
 
-    cats = []
+    # Decide grouping: "lowest" (default) or integer level.
+    observed_levels = {int(idx.get_level(cid)) for cid in cat_meals.keys()}
+    max_level = max(observed_levels) if observed_levels else 0
+    level_raw = (category_level or "").strip().lower()
+    group_level: int | None
+    if not level_raw or level_raw == "lowest":
+        group_level = None
+    else:
+        try:
+            group_level = int(level_raw)
+        except Exception:
+            group_level = None
+
+    grouped: dict[str, set[str]] = defaultdict(set)
     for cid, meal_ids in cat_meals.items():
+        gid = cid if group_level is None else _pick_category_at_level(idx, cid, target_level=group_level)
+        grouped[str(gid)].update(meal_ids)
+
+    cats = []
+    for cid, meal_ids in grouped.items():
         n = len(meal_ids)
         if n <= 0:
             continue
         with_sym = sum(1 for mid in meal_ids if meal_has.get(mid, False))
+        parent_ids = idx.get_parent_ids(cid)[:3]
         cats.append(
             {
+                "category_id": cid,
                 "name": idx.get_label(cid, prefer_lang=prefer_lang),
+                "level": int(idx.get_level(cid)),
+                "parents": [
+                    {
+                        "id": p,
+                        "name": idx.get_label(p, prefer_lang=prefer_lang),
+                        "level": int(idx.get_level(p)),
+                    }
+                    for p in parent_ids
+                ],
                 "meal_count": n,
                 "share_pct": (100.0 * n / total_meals) if total_meals else 0.0,
                 "symptom_window_rate_pct": (100.0 * with_sym / n) if n else 0.0,
@@ -175,11 +285,20 @@ def product_categories(*, user_id: str, from_date: str, to_date: str, now_utc: d
         "from": d_from.isoformat(),
         "to": d_to.isoformat(),
         "total_meals": total_meals,
+        "category_level": "lowest" if group_level is None else group_level,
+        "max_observed_level": int(max_level),
         "categories": cats[:30],
     }
 
 
-def symptoms(*, user_id: str, from_date: str, to_date: str, symptom_type: str | None = None) -> dict:
+def symptoms(
+    *,
+    user_id: str,
+    from_date: str,
+    to_date: str,
+    symptom_type: str | None = None,
+    bucket_hours: int | None = None,
+) -> dict:
     user = _load_user(user_id)
     tz = ZoneInfo(user.timezone or "UTC")
     start_utc, end_excl_utc, d_from, d_to = _date_range_to_utc(tz, from_date, to_date)
@@ -190,28 +309,61 @@ def symptoms(*, user_id: str, from_date: str, to_date: str, symptom_type: str | 
         symptom_type=symptom_type,
     )
 
-    by_day: dict[str, list[int]] = defaultdict(list)
+    # Bucket choice for the timeline chart:
+    # - default: daily
+    # - if bucket_hours == 3: 3-hour blocks
+    bh = int(bucket_hours) if isinstance(bucket_hours, int) else 24
+    if bh not in (3, 6, 12, 24):
+        bh = 24
+
+    by_bucket: dict[str, list[int]] = defaultdict(list)
     by_type_counter: dict[str, list[int]] = defaultdict(list)
+
+    def bucket_key(dt_local: datetime) -> str:
+        if bh == 24:
+            return dt_local.date().isoformat()
+        floored_hour = (int(dt_local.hour) // bh) * bh
+        start_local = dt_local.replace(hour=floored_hour, minute=0, second=0, microsecond=0)
+        # Keep as ISO-like string for stable lexicographic sorting.
+        return start_local.strftime("%Y-%m-%d %H:%M")
+
     for s in syms:
         started_local = _as_utc_aware(s.started_at).astimezone(tz)
-        d = started_local.date().isoformat()
-        by_day[d].append(int(s.intensity))
+        k = bucket_key(started_local)
+        by_bucket[k].append(int(s.intensity))
         by_type_counter[str(s.symptom_type or "other")].append(int(s.intensity))
 
-    # Fill missing days with 0s for nicer charts.
+    # Fill missing buckets for nicer charts.
     daily_out = []
-    cur = d_from
-    while cur <= d_to:
-        k = cur.isoformat()
-        xs = by_day.get(k, [])
-        daily_out.append(
-            {
-                "date": k,
-                "count": len(xs),
-                "avg_intensity": (sum(xs) / len(xs)) if xs else 0.0,
-            }
-        )
-        cur = cur + timedelta(days=1)
+    if bh == 24:
+        cur = d_from
+        while cur <= d_to:
+            k = cur.isoformat()
+            xs = by_bucket.get(k, [])
+            daily_out.append(
+                {
+                    "date": k,
+                    "count": len(xs),
+                    "avg_intensity": (sum(xs) / len(xs)) if xs else 0.0,
+                }
+            )
+            cur = cur + timedelta(days=1)
+    else:
+        start_local = datetime.combine(d_from, time(0, 0), tzinfo=tz)
+        end_excl_local = datetime.combine(d_to + timedelta(days=1), time(0, 0), tzinfo=tz)
+        cur_dt = start_local
+        step = timedelta(hours=bh)
+        while cur_dt < end_excl_local:
+            k = cur_dt.strftime("%Y-%m-%d %H:%M")
+            xs = by_bucket.get(k, [])
+            daily_out.append(
+                {
+                    "date": k,
+                    "count": len(xs),
+                    "avg_intensity": (sum(xs) / len(xs)) if xs else 0.0,
+                }
+            )
+            cur_dt = cur_dt + step
 
     by_type_out = []
     for st, xs in by_type_counter.items():
@@ -237,6 +389,7 @@ def symptoms(*, user_id: str, from_date: str, to_date: str, symptom_type: str | 
     return {
         "from": d_from.isoformat(),
         "to": d_to.isoformat(),
+        "bucket_hours": bh,
         "daily": daily_out,
         "by_type": by_type_out,
         "intensity_histogram": hist_out,
@@ -312,6 +465,27 @@ def correlations(*, user_id: str, from_date: str, to_date: str, now_utc: datetim
         if r:
             rows.append(r)
 
+    # Meal item type features (dish/ingredient/drink/product) per meal
+    meal_types = _meal_id_to_item_types(user_id=user_id, start_utc=start_utc, end_excl_utc=end_excl_utc)
+    type_to_meals: dict[str, set[str]] = defaultdict(set)
+    for mid, types in meal_types.items():
+        for t in types:
+            type_to_meals[str(t)].add(mid)
+    for t, mids in type_to_meals.items():
+        label = t.capitalize()
+        r = _bucket("meal_type", label, mids)
+        if r:
+            # Override label prefix text for readability.
+            rows.append(
+                _Row(
+                    feature_key=r.feature_key,
+                    label=f"Meal type: {label}",
+                    support_meals=r.support_meals,
+                    symptom_rate_pct=r.symptom_rate_pct,
+                    delta_pp=r.delta_pp,
+                )
+            )
+
     # Category features
     cat_meals = _category_meals_map(user_id=user_id, start_utc=start_utc, end_excl_utc=end_excl_utc)
     idx = get_taxonomy_index()
@@ -349,6 +523,121 @@ def correlations(*, user_id: str, from_date: str, to_date: str, now_utc: datetim
             }
             for r in rows[:40]
         ],
+    }
+
+
+def timeline(*, user_id: str, from_date: str, to_date: str, now_utc: datetime | None = None) -> dict:
+    user = _load_user(user_id)
+    tz = ZoneInfo(user.timezone or "UTC")
+    start_utc, end_excl_utc, d_from, d_to = _date_range_to_utc(tz, from_date, to_date, now_utc=now_utc)
+
+    meals = _meals_in_range(user_id=user_id, start_utc=start_utc, end_excl_utc=end_excl_utc)
+    syms = _symptoms_in_range(user_id=user_id, start_utc=start_utc, end_excl_utc=end_excl_utc)
+    meds = _medications_in_range(user_id=user_id, start_utc=start_utc, end_excl_utc=end_excl_utc)
+
+    def _short(s: str, n: int = 140) -> str:
+        ss = (s or "").strip().replace("\n", " ")
+        if len(ss) <= n:
+            return ss
+        return ss[: n - 1] + "…"
+
+    events: list[dict] = []
+    for m in meals:
+        dt_local = _as_utc_aware(m.occurred_at).astimezone(tz)
+        events.append(
+            {
+                "kind": "meal",
+                "at": dt_local.isoformat(),
+                "meal_id": m.id,
+                "notes": _short(getattr(m, "notes_text", "") or ""),
+                "portion": str(getattr(m, "portion_size", "") or ""),
+                "fat": str(getattr(m, "fat_level", "") or ""),
+                "posture": str(getattr(m, "posture_after", "") or ""),
+            }
+        )
+    for s in syms:
+        dt_local = _as_utc_aware(s.started_at).astimezone(tz)
+        events.append(
+            {
+                "kind": "symptom",
+                "at": dt_local.isoformat(),
+                "symptom_id": s.id,
+                "type": symptom_type_label(getattr(user, "language", None), str(getattr(s, "symptom_type", "") or "other")),
+                "intensity": int(getattr(s, "intensity", 0)),
+                "duration_minutes": getattr(s, "duration_minutes", None),
+            }
+        )
+
+    for m in meds:
+        dt_local = _as_utc_aware(m.taken_at).astimezone(tz)
+        events.append(
+            {
+                "kind": "medication",
+                "at": dt_local.isoformat(),
+                "medication_id": m.id,
+                "name": str(getattr(m, "name", "") or ""),
+                "dosage": str(getattr(m, "dosage", "") or ""),
+            }
+        )
+
+    events.sort(key=lambda e: e.get("at") or "")
+
+    return {
+        "from": d_from.isoformat(),
+        "to": d_to.isoformat(),
+        "timezone": str(tz.key),
+        "events": events,
+    }
+
+
+def medications(*, user_id: str, from_date: str, to_date: str, now_utc: datetime | None = None) -> dict:
+    user = _load_user(user_id)
+    tz = ZoneInfo(user.timezone or "UTC")
+    start_utc, end_excl_utc, d_from, d_to = _date_range_to_utc(tz, from_date, to_date, now_utc=now_utc)
+
+    meds = _medications_in_range(user_id=user_id, start_utc=start_utc, end_excl_utc=end_excl_utc)
+    total = len(meds)
+
+    # Daily counts (fill missing days)
+    by_day: dict[str, int] = defaultdict(int)
+    for m in meds:
+        d = _as_utc_aware(m.taken_at).astimezone(tz).date().isoformat()
+        by_day[d] += 1
+    daily = []
+    cur = d_from
+    while cur <= d_to:
+        k = cur.isoformat()
+        daily.append({"date": k, "count": int(by_day.get(k, 0))})
+        cur = cur + timedelta(days=1)
+
+    # By name stats
+    name_rows: dict[str, dict] = {}
+    for m in meds:
+        name = (getattr(m, "name", "") or "").strip() or "Unknown"
+        row = name_rows.get(name)
+        taken_local = _as_utc_aware(m.taken_at).astimezone(tz)
+        if not row:
+            name_rows[name] = {
+                "name": name,
+                "count": 1,
+                "last_taken_at": taken_local.isoformat(),
+            }
+        else:
+            row["count"] = int(row["count"]) + 1
+            if str(taken_local.isoformat()) > str(row.get("last_taken_at") or ""):
+                row["last_taken_at"] = taken_local.isoformat()
+
+    by_name = list(name_rows.values())
+    for r in by_name:
+        r["share_pct"] = (100.0 * float(r["count"]) / total) if total else 0.0
+    by_name.sort(key=lambda r: (r["count"], r["share_pct"]), reverse=True)
+
+    return {
+        "from": d_from.isoformat(),
+        "to": d_to.isoformat(),
+        "total_taken": total,
+        "daily": daily,
+        "by_name": by_name[:30],
     }
 
 
