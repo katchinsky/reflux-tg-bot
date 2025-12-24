@@ -50,6 +50,16 @@ STRINGS: dict[Lang, dict[str, str]] = {
         # Report (handler-level)
         "report.not_enough_data": "Not enough data yet (need a few meals logged).",
         "report.row_fmt": "- {label}: {p} ({with_symptom}/{total}), avg intensity {avg}",
+        # Dashboard
+        "dashboard.msg": (
+            "Dashboard: {url}\n"
+            "Login code: {code}\n"
+            "Expires in ~{ttl} min."
+        ),
+        "dashboard.not_configured": (
+            "Dashboard is not configured.\n"
+            "Set DASHBOARD_PUBLIC_URL and DASHBOARD_SESSION_SECRET on the server."
+        ),
         # Meal flow
         "meal.unfinished_resume": "You have an unfinished meal draft. Resume?",
         "meal.time.title": "Meal time:",
@@ -178,6 +188,16 @@ STRINGS: dict[Lang, dict[str, str]] = {
         # Report (handler-level)
         "report.not_enough_data": "Данных пока недостаточно. Продолжаем наблюдение...",
         "report.row_fmt": "* {label}, {p} случаев ({with_symptom}/{total})",
+        # Dashboard
+        "dashboard.msg": (
+            "Дашборд: {url}\n"
+            "Код входа: {code}\n"
+            "Истечёт примерно через {ttl} мин."
+        ),
+        "dashboard.not_configured": (
+            "Дашборд не настроен.\n"
+            "Нужно задать DASHBOARD_PUBLIC_URL и DASHBOARD_SESSION_SECRET на сервере."
+        ),
         # Meal flow
         "meal.unfinished_resume": "Мы нашли незавершённый черновик! Продолжаем?",
         "meal.time.title": "Когда вы ели?",

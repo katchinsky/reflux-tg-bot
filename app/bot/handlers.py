@@ -29,6 +29,7 @@ from app.bot.handlers_flows import (
 )
 from app.services.reports import association_signals, last_7_days_summary
 from app.services.exporting import export_csv_zip_bytes, export_json_bytes
+from app.services.dashboard_codes import create_login_code
 
 
 def _lang(update: Update) -> str:
@@ -104,6 +105,27 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines), reply_markup=main_menu_keyboard())
 
 
+async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user or not update.message:
+        return
+    user = ensure_user(update.effective_user.id, default_timezone=context.bot_data["default_timezone"])
+    lang = getattr(user, "language", _lang(update))
+
+    # Prefer settings-derived URL if provided; fallback to WEBHOOK_URL.
+    url = (os.getenv("DASHBOARD_PUBLIC_URL", "").strip() or os.getenv("WEBHOOK_URL", "").strip()).rstrip("/")
+    secret = os.getenv("DASHBOARD_SESSION_SECRET", "").strip()
+    if not url or not secret:
+        await update.message.reply_text(t(lang, "dashboard.not_configured"), reply_markup=main_menu_keyboard())
+        return
+
+    ttl = int(os.getenv("DASHBOARD_CODE_TTL_MINUTES", "15").strip() or "15")
+    created = create_login_code(user_id=user.id, ttl_minutes=ttl, length=6)
+    await update.message.reply_text(
+        t(lang, "dashboard.msg", url=url, code=created.code, ttl=ttl),
+        reply_markup=main_menu_keyboard(),
+    )
+
+
 async def export_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message:
         return
@@ -153,6 +175,7 @@ def build_handlers(app: Application, *, default_timezone: str) -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("lang", lang_command))
     app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("dashboard", dashboard))
     # Backwards compatibility if a user still has old non-command keyboard buttons.
     app.add_handler(MessageHandler(filters.Regex(r"^(Reports|📊\s*Reports)$"), report))
     app.add_handler(CommandHandler("export", export_menu))
